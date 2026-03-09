@@ -1,0 +1,16 @@
+# macOS system files
+.DS_Store
+
+# Session and credential files
+.instagram_session.json
+*.session.json
+
+# Downloaded content
+downloads/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

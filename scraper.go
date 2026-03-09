@@ -1,0 +1,340 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/PuerkitoBio/goquery"
+	"github.com/chromedp/chromedp"
+)
+
+// NavigateToUser 访问用户主页
+func NavigateToUser(ctx context.Context, username string) error {
+	url := fmt.Sprintf("https://www.instagram.com/%s/", username)
+	fmt.Printf("正在访问 @%s 的主页...\n", username)
+
+	return chromedp.Run(ctx,
+		chromedp.Navigate(url),
+		chromedp.Sleep(5*time.Second),
+	)
+}
+
+// ScrollToLoadMore 滚动页面以加载更多帖子
+func ScrollToLoadMore(ctx context.Context, targetIndex int) error {
+	// Instagram 通常每次加载 12 个帖子
+	// 如果目标索引大于 12，需要滚动
+	if targetIndex <= 12 {
+		return nil
+	}
+
+	scrollTimes := (targetIndex / 12) + 1
+	fmt.Printf("需要滚动加载更多帖子（目标：第 %d 条）...\n", targetIndex)
+
+	for i := 0; i < scrollTimes; i++ {
+		if err := chromedp.Run(ctx,
+			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
+			chromedp.Sleep(2*time.Second),
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// GetPostByIndex 获取第 N 个帖子的链接（从 1 开始）
+func GetPostByIndex(ctx context.Context, index int) (string, error) {
+	fmt.Printf("正在定位第 %d 条帖子...\n", index)
+
+	// 滚动加载更多帖子
+	if err := ScrollToLoadMore(ctx, index); err != nil {
+		return "", err
+	}
+
+	// 获取页面 HTML
+	var htmlContent string
+	if err := chromedp.Run(ctx,
+		chromedp.OuterHTML("html", &htmlContent, chromedp.ByQuery),
+	); err != nil {
+		return "", fmt.Errorf("获取页面 HTML 失败: %v", err)
+	}
+
+	// 使用 goquery 解析
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return "", fmt.Errorf("解析 HTML 失败: %v", err)
+	}
+
+	// 查找所有帖子链接
+	var postLinks []string
+	doc.Find("a").Each(func(i int, s *goquery.Selection) {
+		href, exists := s.Attr("href")
+		if exists && (strings.Contains(href, "/p/") || strings.Contains(href, "/reel/")) {
+			// 转换为完整 URL
+			if strings.HasPrefix(href, "/") {
+				href = "https://www.instagram.com" + href
+			}
+			postLinks = append(postLinks, href)
+		}
+	})
+
+	// 去重
+	uniqueLinks := make(map[string]bool)
+	var finalLinks []string
+	for _, link := range postLinks {
+		if !uniqueLinks[link] {
+			uniqueLinks[link] = true
+			finalLinks = append(finalLinks, link)
+		}
+	}
+
+	fmt.Printf("找到 %d 个帖子链接\n", len(finalLinks))
+
+	// 调试：输出前几个链接
+	if len(finalLinks) > 0 {
+		fmt.Println("前几个链接示例:")
+		for i := 0; i < len(finalLinks) && i < 5; i++ {
+			fmt.Printf("  %d: %s\n", i+1, finalLinks[i])
+		}
+	}
+
+	if len(finalLinks) == 0 {
+		return "", fmt.Errorf("未找到任何帖子")
+	}
+
+	if index > len(finalLinks) {
+		return "", fmt.Errorf("帖子索引超出范围（共 %d 条帖子，请求第 %d 条）", len(finalLinks), index)
+	}
+
+	postURL := finalLinks[index-1]
+	fmt.Printf("选择帖子: %s\n", postURL)
+	return postURL, nil
+}
+
+// MediaInfo 媒体信息
+type MediaInfo struct {
+	Type  string       // "image", "video" 或 "carousel"
+	URLs  []string     // 媒体 URL 列表
+	Types []string     // 每个 URL 对应的类型（"image" 或 "video"）
+}
+
+// ExtractMediaURLs 提取帖子中的所有媒体 URL（从网页HTML中解析）
+func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
+	fmt.Println("正在提取媒体内容...")
+
+	// 从 URL 提取 shortcode
+	shortcode := extractShortcode(postURL)
+	if shortcode == "" {
+		return nil, fmt.Errorf("无法从 URL 提取 shortcode: %s", postURL)
+	}
+	fmt.Printf("Shortcode: %s\n", shortcode)
+
+	// 加载 session cookies
+	cookies, err := LoadSession()
+	if err != nil {
+		return nil, fmt.Errorf("加载 session 失败: %v", err)
+	}
+
+	// 构造 GraphQL POST 请求（与 Python instaloader 相同的方式）
+	docID := "8845758582119845"
+	variables := fmt.Sprintf(`{"shortcode":"%s"}`, shortcode)
+
+	// 构造表单数据
+	formData := fmt.Sprintf("variables=%s&doc_id=%s&server_timestamps=true",
+		strings.ReplaceAll(variables, `"`, `%22`),
+		docID)
+
+	apiURL := "https://www.instagram.com/graphql/query"
+	fmt.Printf("请求 API: %s\n", apiURL)
+
+	// 创建 HTTP POST 请求
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData))
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %v", err)
+	}
+
+	// 设置请求头（模仿 instaloader）
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("Referer", postURL)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("authority", "www.instagram.com")
+	req.Header.Set("scheme", "https")
+
+	// 添加 cookies 并提取 csrftoken
+	var cookieStrs []string
+	var csrfToken string
+	for _, c := range cookies {
+		if c.Name != "" && c.Value != "" {
+			cookieStrs = append(cookieStrs, fmt.Sprintf("%s=%s", c.Name, c.Value))
+			// 提取 csrftoken
+			if c.Name == "csrftoken" {
+				csrfToken = c.Value
+			}
+		}
+	}
+	if len(cookieStrs) > 0 {
+		req.Header.Set("Cookie", strings.Join(cookieStrs, "; "))
+	}
+
+	// 添加 X-CSRFToken 请求头（关键！）
+	if csrfToken != "" {
+		req.Header.Set("X-CSRFToken", csrfToken)
+		fmt.Printf("使用 CSRF Token: %s\n", csrfToken[:10]+"...")
+	} else {
+		return nil, fmt.Errorf("未找到 csrftoken，请重新登录")
+	}
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	fmt.Printf("响应状态: %d\n", resp.StatusCode)
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 解析 JSON 响应
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("解析 JSON 失败: %v", err)
+	}
+
+	// 调试：打印响应
+	jsonData, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println("\n=== API 响应 ===")
+	if len(jsonData) > 1000 {
+		fmt.Printf("%s\n...\n", string(jsonData[:1000]))
+	} else {
+		fmt.Println(string(jsonData))
+	}
+	fmt.Println("================\n")
+
+	// 提取 data.xdt_shortcode_media（注意是 xdt_shortcode_media）
+	data, ok := result["data"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("响应中没有 data 字段")
+	}
+
+	// 尝试 xdt_shortcode_media（新版）
+	var shortcodeMedia map[string]interface{}
+	if media, ok := data["xdt_shortcode_media"].(map[string]interface{}); ok {
+		shortcodeMedia = media
+	} else if media, ok := data["shortcode_media"].(map[string]interface{}); ok {
+		// 兼容旧版
+		shortcodeMedia = media
+	} else {
+		return nil, fmt.Errorf("响应中没有 xdt_shortcode_media 或 shortcode_media 字段")
+	}
+
+	// 提取媒体 URL
+	return extractMediaFromJSON(shortcodeMedia)
+}
+
+// extractShortcode 从帖子 URL 中提取 shortcode
+func extractShortcode(postURL string) string {
+	// URL 格式: https://www.instagram.com/xxx/p/SHORTCODE/ 或 /reel/SHORTCODE/
+	parts := strings.Split(postURL, "/")
+	for i, part := range parts {
+		if (part == "p" || part == "reel") && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// parseMediaData 从提取的数据中解析媒体信息
+// extractMediaFromJSON 从 JSON 数据中提取媒体 URL
+func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
+	mediaInfo := &MediaInfo{
+		Type:  "image",
+		URLs:  []string{},
+		Types: []string{},
+	}
+
+	// 检查是否是视频
+	if isVideo, ok := data["is_video"].(bool); ok && isVideo {
+		mediaInfo.Type = "video"
+		// 提取视频 URL
+		if videoURL, ok := data["video_url"].(string); ok {
+			mediaInfo.URLs = append(mediaInfo.URLs, videoURL)
+			mediaInfo.Types = append(mediaInfo.Types, "video")
+			fmt.Printf("找到视频: %s\n", videoURL)
+			return mediaInfo, nil
+		}
+	}
+
+	// 检查是否是多图轮播（GraphQL 格式）
+	if edgeSidecar, ok := data["edge_sidecar_to_children"].(map[string]interface{}); ok {
+		if edges, ok := edgeSidecar["edges"].([]interface{}); ok && len(edges) > 0 {
+			fmt.Printf("检测到多图轮播，共 %d 项\n", len(edges))
+			mediaInfo.Type = "carousel"
+			for i, edge := range edges {
+				edgeMap := edge.(map[string]interface{})
+				if node, ok := edgeMap["node"].(map[string]interface{}); ok {
+					// 检查是否是视频
+					if isVideo, ok := node["is_video"].(bool); ok && isVideo {
+						if videoURL, ok := node["video_url"].(string); ok {
+							mediaInfo.URLs = append(mediaInfo.URLs, videoURL)
+							mediaInfo.Types = append(mediaInfo.Types, "video")
+							fmt.Printf("  视频 %d: %s\n", i+1, videoURL)
+							continue
+						}
+					}
+					// 提取图片
+					url := extractImageURL(node)
+					if url != "" {
+						mediaInfo.URLs = append(mediaInfo.URLs, url)
+						mediaInfo.Types = append(mediaInfo.Types, "image")
+						fmt.Printf("  图片 %d: %s\n", i+1, url)
+					}
+				}
+			}
+			return mediaInfo, nil
+		}
+	}
+
+	// 单图
+	url := extractImageURL(data)
+	if url != "" {
+		mediaInfo.URLs = append(mediaInfo.URLs, url)
+		mediaInfo.Types = append(mediaInfo.Types, "image")
+		fmt.Printf("找到单图: %s\n", url)
+		return mediaInfo, nil
+	}
+
+	return nil, fmt.Errorf("未找到任何媒体 URL")
+}
+
+// extractImageURL 从媒体数据中提取图片 URL（优先选择最高质量）
+func extractImageURL(item map[string]interface{}) string {
+	// GraphQL: display_url
+	if displayURL, ok := item["display_url"].(string); ok {
+		return displayURL
+	}
+
+	// 备用: display_resources（选择最大的）
+	if displayResources, ok := item["display_resources"].([]interface{}); ok && len(displayResources) > 0 {
+		// 取最后一个（通常是最大的）
+		lastResource := displayResources[len(displayResources)-1].(map[string]interface{})
+		if src, ok := lastResource["src"].(string); ok {
+			return src
+		}
+	}
+
+	return ""
+}
