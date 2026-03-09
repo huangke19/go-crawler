@@ -7,7 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
+
+// downloadTask 下载任务
+type downloadTask struct {
+	url      string
+	savePath string
+}
 
 // CreateUserDirectory 创建用户下载目录
 func CreateUserDirectory(username string) (string, error) {
@@ -18,39 +26,50 @@ func CreateUserDirectory(username string) (string, error) {
 	return dirPath, nil
 }
 
-// DownloadMedia 下载单个媒体文件
-func DownloadMedia(url, savePath string) error {
-	fmt.Printf("正在下载: %s\n", filepath.Base(savePath))
+// DownloadMedia 下载单个媒体文件，支持重试
+func DownloadMedia(url, savePath string, retries int) error {
+	var lastErr error
 
-	// 发送 HTTP 请求
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("下载失败: %v", err)
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			fmt.Printf("  重试 %d/%d: %s\n", attempt, retries, filepath.Base(savePath))
+		}
+
+		// 发送 HTTP 请求
+		resp, err := http.Get(url)
+		if err != nil {
+			lastErr = fmt.Errorf("下载失败: %v", err)
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+			continue
+		}
+
+		// 创建文件
+		file, err := os.Create(savePath)
+		if err != nil {
+			lastErr = fmt.Errorf("创建文件失败: %v", err)
+			continue
+		}
+		defer file.Close()
+
+		// 写入文件
+		_, err = io.Copy(file, resp.Body)
+		if err != nil {
+			lastErr = fmt.Errorf("写入文件失败: %v", err)
+			continue
+		}
+
+		return nil
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
-	}
-
-	// 创建文件
-	file, err := os.Create(savePath)
-	if err != nil {
-		return fmt.Errorf("创建文件失败: %v", err)
-	}
-	defer file.Close()
-
-	// 写入文件
-	_, err = io.Copy(file, resp.Body)
-	if err != nil {
-		return fmt.Errorf("写入文件失败: %v", err)
-	}
-
-	fmt.Printf("✓ 下载完成: %s\n", savePath)
-	return nil
+	return lastErr
 }
 
-// DownloadPost 下载帖子的所有媒体
+// DownloadPost 下载帖子的所有媒体（并发下载）
 func DownloadPost(username string, postIndex int, mediaInfo *MediaInfo) error {
 	// 创建用户目录
 	userDir, err := CreateUserDirectory(username)
@@ -58,53 +77,90 @@ func DownloadPost(username string, postIndex int, mediaInfo *MediaInfo) error {
 		return err
 	}
 
+	// 准备下载任务列表
+	var tasks []downloadTask
+
 	if mediaInfo.Type == "video" {
-		// 下载单个视频
+		// 单个视频
 		filename := fmt.Sprintf("post_%d.mp4", postIndex)
 		savePath := filepath.Join(userDir, filename)
-		return DownloadMedia(mediaInfo.URLs[0], savePath)
-	}
-
-	if mediaInfo.Type == "carousel" {
-		// 下载轮播内容（可能包含图片和视频）
+		tasks = append(tasks, downloadTask{url: mediaInfo.URLs[0], savePath: savePath})
+	} else if mediaInfo.Type == "carousel" {
+		// 轮播内容（可能包含图片和视频）
 		for i, url := range mediaInfo.URLs {
-			var filename string
 			var ext string
-
-			// 根据媒体类型确定扩展名
 			if i < len(mediaInfo.Types) && mediaInfo.Types[i] == "video" {
 				ext = ".mp4"
 			} else {
 				ext = ".jpg"
 			}
-
-			filename = fmt.Sprintf("post_%d_%d%s", postIndex, i+1, ext)
+			filename := fmt.Sprintf("post_%d_%d%s", postIndex, i+1, ext)
 			savePath := filepath.Join(userDir, filename)
-
-			if err := DownloadMedia(url, savePath); err != nil {
-				return err
+			tasks = append(tasks, downloadTask{url: url, savePath: savePath})
+		}
+	} else {
+		// 图片（单图或多图）
+		for i, url := range mediaInfo.URLs {
+			var filename string
+			if len(mediaInfo.URLs) == 1 {
+				filename = fmt.Sprintf("post_%d.jpg", postIndex)
+			} else {
+				filename = fmt.Sprintf("post_%d_%d.jpg", postIndex, i+1)
 			}
-		}
-		return nil
-	}
-
-	// 下载图片（单图或多图）
-	for i, url := range mediaInfo.URLs {
-		var filename string
-		if len(mediaInfo.URLs) == 1 {
-			// 单图
-			filename = fmt.Sprintf("post_%d.jpg", postIndex)
-		} else {
-			// 多图
-			filename = fmt.Sprintf("post_%d_%d.jpg", postIndex, i+1)
-		}
-
-		savePath := filepath.Join(userDir, filename)
-		if err := DownloadMedia(url, savePath); err != nil {
-			return err
+			savePath := filepath.Join(userDir, filename)
+			tasks = append(tasks, downloadTask{url: url, savePath: savePath})
 		}
 	}
 
+	// 并发下载
+	return downloadConcurrently(tasks, 3, 1)
+}
+
+// downloadConcurrently 并发下载多个文件
+func downloadConcurrently(tasks []downloadTask, maxConcurrent int, retries int) error {
+	totalFiles := len(tasks)
+	var completed int32
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, maxConcurrent)
+	errChan := make(chan error, totalFiles)
+
+	fmt.Printf("开始下载 %d 个文件...\n", totalFiles)
+
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(t downloadTask) {
+			defer wg.Done()
+
+			// 获取信号量
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			// 下载文件
+			if err := DownloadMedia(t.url, t.savePath, retries); err != nil {
+				errChan <- fmt.Errorf("%s: %v", filepath.Base(t.savePath), err)
+				return
+			}
+
+			// 更新进度
+			atomic.AddInt32(&completed, 1)
+		}(task)
+	}
+
+	// 等待所有下载完成
+	wg.Wait()
+	close(errChan)
+
+	// 收集错误
+	var errors []error
+	for err := range errChan {
+		errors = append(errors, err)
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("下载失败 %d 个文件", len(errors))
+	}
+
+	fmt.Printf("✓ 下载完成，共 %d 个文件\n", totalFiles)
 	return nil
 }
 

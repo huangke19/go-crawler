@@ -20,7 +20,8 @@ func NavigateToUser(ctx context.Context, username string) error {
 
 	return chromedp.Run(ctx,
 		chromedp.Navigate(url),
-		chromedp.Sleep(5*time.Second),
+		chromedp.WaitReady("body"),
+		chromedp.Sleep(2*time.Second), // 短暂等待确保内容加载
 	)
 }
 
@@ -33,12 +34,11 @@ func ScrollToLoadMore(ctx context.Context, targetIndex int) error {
 	}
 
 	scrollTimes := (targetIndex / 12) + 1
-	fmt.Printf("需要滚动加载更多帖子（目标：第 %d 条）...\n", targetIndex)
 
 	for i := 0; i < scrollTimes; i++ {
 		if err := chromedp.Run(ctx,
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
-			chromedp.Sleep(2*time.Second),
+			chromedp.Sleep(1*time.Second), // 等待内容加载
 		); err != nil {
 			return err
 		}
@@ -93,16 +93,6 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 		}
 	}
 
-	fmt.Printf("找到 %d 个帖子链接\n", len(finalLinks))
-
-	// 调试：输出前几个链接
-	if len(finalLinks) > 0 {
-		fmt.Println("前几个链接示例:")
-		for i := 0; i < len(finalLinks) && i < 5; i++ {
-			fmt.Printf("  %d: %s\n", i+1, finalLinks[i])
-		}
-	}
-
 	if len(finalLinks) == 0 {
 		return "", fmt.Errorf("未找到任何帖子")
 	}
@@ -111,9 +101,7 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 		return "", fmt.Errorf("帖子索引超出范围（共 %d 条帖子，请求第 %d 条）", len(finalLinks), index)
 	}
 
-	postURL := finalLinks[index-1]
-	fmt.Printf("选择帖子: %s\n", postURL)
-	return postURL, nil
+	return finalLinks[index-1], nil
 }
 
 // MediaInfo 媒体信息
@@ -132,7 +120,6 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	if shortcode == "" {
 		return nil, fmt.Errorf("无法从 URL 提取 shortcode: %s", postURL)
 	}
-	fmt.Printf("Shortcode: %s\n", shortcode)
 
 	// 加载 session cookies
 	cookies, err := LoadSession()
@@ -150,7 +137,6 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 		docID)
 
 	apiURL := "https://www.instagram.com/graphql/query"
-	fmt.Printf("请求 API: %s\n", apiURL)
 
 	// 创建 HTTP POST 请求
 	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData))
@@ -186,7 +172,6 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	// 添加 X-CSRFToken 请求头（关键！）
 	if csrfToken != "" {
 		req.Header.Set("X-CSRFToken", csrfToken)
-		fmt.Printf("使用 CSRF Token: %s\n", csrfToken[:10]+"...")
 	} else {
 		return nil, fmt.Errorf("未找到 csrftoken，请重新登录")
 	}
@@ -201,8 +186,6 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	}
 	defer resp.Body.Close()
 
-	fmt.Printf("响应状态: %d\n", resp.StatusCode)
-
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
@@ -213,16 +196,6 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("解析 JSON 失败: %v", err)
 	}
-
-	// 调试：打印响应
-	jsonData, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println("\n=== API 响应 ===")
-	if len(jsonData) > 1000 {
-		fmt.Printf("%s\n...\n", string(jsonData[:1000]))
-	} else {
-		fmt.Println(string(jsonData))
-	}
-	fmt.Println("================\n")
 
 	// 提取 data.xdt_shortcode_media（注意是 xdt_shortcode_media）
 	data, ok := result["data"].(map[string]interface{})
@@ -273,7 +246,6 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 		if videoURL, ok := data["video_url"].(string); ok {
 			mediaInfo.URLs = append(mediaInfo.URLs, videoURL)
 			mediaInfo.Types = append(mediaInfo.Types, "video")
-			fmt.Printf("找到视频: %s\n", videoURL)
 			return mediaInfo, nil
 		}
 	}
@@ -283,7 +255,7 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 		if edges, ok := edgeSidecar["edges"].([]interface{}); ok && len(edges) > 0 {
 			fmt.Printf("检测到多图轮播，共 %d 项\n", len(edges))
 			mediaInfo.Type = "carousel"
-			for i, edge := range edges {
+			for _, edge := range edges {
 				edgeMap := edge.(map[string]interface{})
 				if node, ok := edgeMap["node"].(map[string]interface{}); ok {
 					// 检查是否是视频
@@ -291,7 +263,6 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 						if videoURL, ok := node["video_url"].(string); ok {
 							mediaInfo.URLs = append(mediaInfo.URLs, videoURL)
 							mediaInfo.Types = append(mediaInfo.Types, "video")
-							fmt.Printf("  视频 %d: %s\n", i+1, videoURL)
 							continue
 						}
 					}
@@ -300,7 +271,6 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 					if url != "" {
 						mediaInfo.URLs = append(mediaInfo.URLs, url)
 						mediaInfo.Types = append(mediaInfo.Types, "image")
-						fmt.Printf("  图片 %d: %s\n", i+1, url)
 					}
 				}
 			}
@@ -313,7 +283,6 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 	if url != "" {
 		mediaInfo.URLs = append(mediaInfo.URLs, url)
 		mediaInfo.Types = append(mediaInfo.Types, "image")
-		fmt.Printf("找到单图: %s\n", url)
 		return mediaInfo, nil
 	}
 

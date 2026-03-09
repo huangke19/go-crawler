@@ -56,22 +56,19 @@ func Login(ctx context.Context, username, password string) error {
 
 	err := chromedp.Run(ctx,
 		chromedp.Navigate("https://www.instagram.com/accounts/login/"),
-		chromedp.Sleep(2*time.Second),
 
 		// 等待登录表单加载
 		chromedp.WaitVisible(`input[name="username"]`, chromedp.ByQuery),
 
 		// 输入用户名和密码
 		chromedp.SendKeys(`input[name="username"]`, username, chromedp.ByQuery),
-		chromedp.Sleep(500*time.Millisecond),
 		chromedp.SendKeys(`input[name="password"]`, password, chromedp.ByQuery),
-		chromedp.Sleep(500*time.Millisecond),
 
 		// 点击登录按钮
 		chromedp.Click(`button[type="submit"]`, chromedp.ByQuery),
 
-		// 等待登录完成（等待主页元素出现）
-		chromedp.Sleep(5*time.Second),
+		// 等待登录完成（等待主页元素出现或登录按钮消失）
+		chromedp.Sleep(3*time.Second),
 	)
 
 	if err != nil {
@@ -148,7 +145,7 @@ func EnsureLoggedIn(ctx context.Context) error {
 			// 刷新页面验证登录状态
 			if err := chromedp.Run(ctx,
 				chromedp.Navigate("https://www.instagram.com/"),
-				chromedp.Sleep(3*time.Second),
+				chromedp.WaitReady("body"),
 			); err != nil {
 				return err
 			}
