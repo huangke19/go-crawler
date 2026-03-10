@@ -18,11 +18,31 @@ func NavigateToUser(ctx context.Context, username string) error {
 	url := fmt.Sprintf("https://www.instagram.com/%s/", username)
 	fmt.Printf("正在访问 @%s 的主页...\n", username)
 
-	return chromedp.Run(ctx,
+	err := chromedp.Run(ctx,
+		// 禁用图片和媒体加载
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			// 通过 CDP 协议禁用图片
+			return chromedp.Evaluate(`
+				// 禁用图片加载
+				document.addEventListener('DOMContentLoaded', function() {
+					var images = document.getElementsByTagName('img');
+					for(var i = 0; i < images.length; i++) {
+						images[i].src = '';
+					}
+				});
+			`, nil).Do(ctx)
+		}),
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
-		chromedp.Sleep(2*time.Second), // 短暂等待确保内容加载
+		chromedp.Sleep(1*time.Second), // 减少等待时间
 	)
+
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("✓ 页面加载完成")
+	return nil
 }
 
 // ScrollToLoadMore 滚动页面以加载更多帖子
@@ -34,16 +54,19 @@ func ScrollToLoadMore(ctx context.Context, targetIndex int) error {
 	}
 
 	scrollTimes := (targetIndex / 12) + 1
+	fmt.Printf("需要滚动 %d 次以加载更多帖子...\n", scrollTimes)
 
 	for i := 0; i < scrollTimes; i++ {
+		fmt.Printf("  滚动 %d/%d\n", i+1, scrollTimes)
 		if err := chromedp.Run(ctx,
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
-			chromedp.Sleep(1*time.Second), // 等待内容加载
+			chromedp.Sleep(800*time.Millisecond), // 减少等待时间
 		); err != nil {
 			return err
 		}
 	}
 
+	fmt.Println("✓ 滚动完成")
 	return nil
 }
 
@@ -56,6 +79,7 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 		return "", err
 	}
 
+	fmt.Println("正在解析页面...")
 	// 获取页面 HTML
 	var htmlContent string
 	if err := chromedp.Run(ctx,
@@ -96,6 +120,8 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 	if len(finalLinks) == 0 {
 		return "", fmt.Errorf("未找到任何帖子")
 	}
+
+	fmt.Printf("✓ 找到 %d 个帖子\n", len(finalLinks))
 
 	if index > len(finalLinks) {
 		return "", fmt.Errorf("帖子索引超出范围（共 %d 条帖子，请求第 %d 条）", len(finalLinks), index)

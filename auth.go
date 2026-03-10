@@ -169,8 +169,24 @@ func EnsureLoggedIn(ctx context.Context) error {
 // CreateBrowserContext 创建带有设备模拟的浏览器上下文
 func CreateBrowserContext() (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false), // 设置为 false 方便调试
+		chromedp.Flag("headless", false), // 登录时需要显示浏览器
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+	)
+
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	ctx, _ := chromedp.NewContext(allocCtx)
+
+	return ctx, cancel
+}
+
+// CreateFastBrowserContext 创建快速浏览器上下文（无头模式，禁用图片等）
+func CreateFastBrowserContext() (context.Context, context.CancelFunc) {
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true), // 无头模式
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("disable-images", true),           // 禁用图片
+		chromedp.Flag("blink-settings", "imagesEnabled=false"), // 禁用图片加载
 		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
 

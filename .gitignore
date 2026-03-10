@@ -5,6 +5,9 @@
 .instagram_session.json
 *.session.json
 
+# Configuration files
+config.json
+
 # Downloaded content
 downloads/
 
@@ -14,3 +17,11 @@ downloads/
 *.swp
 *.swo
 *~
+
+# Daemon files
+.gobot.pid
+gobot.log
+
+# Build artifacts
+crawler
+gobot

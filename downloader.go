@@ -71,10 +71,21 @@ func DownloadMedia(url, savePath string, retries int) error {
 
 // DownloadPost 下载帖子的所有媒体（并发下载）
 func DownloadPost(username string, postIndex int, mediaInfo *MediaInfo) error {
+	_, err := downloadPostInternal(username, postIndex, mediaInfo)
+	return err
+}
+
+// DownloadPostAndReturnPaths 下载帖子并返回文件路径列表（用于 Telegram Bot）
+func DownloadPostAndReturnPaths(username string, postIndex int, mediaInfo *MediaInfo) ([]string, error) {
+	return downloadPostInternal(username, postIndex, mediaInfo)
+}
+
+// downloadPostInternal 内部下载函数，返回文件路径列表
+func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) ([]string, error) {
 	// 创建用户目录
 	userDir, err := CreateUserDirectory(username)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// 准备下载任务列表
@@ -113,7 +124,17 @@ func DownloadPost(username string, postIndex int, mediaInfo *MediaInfo) error {
 	}
 
 	// 并发下载
-	return downloadConcurrently(tasks, 3, 1)
+	if err := downloadConcurrently(tasks, 5, 1); err != nil {
+		return nil, err
+	}
+
+	// 收集文件路径
+	var filePaths []string
+	for _, task := range tasks {
+		filePaths = append(filePaths, task.savePath)
+	}
+
+	return filePaths, nil
 }
 
 // downloadConcurrently 并发下载多个文件
