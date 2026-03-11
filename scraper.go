@@ -34,7 +34,7 @@ func NavigateToUser(ctx context.Context, username string) error {
 		}),
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
-		chromedp.Sleep(1*time.Second), // 减少等待时间
+		chromedp.Sleep(2*time.Second), // 增加等待时间，确保初始内容加载
 	)
 
 	if err != nil {
@@ -58,12 +58,39 @@ func ScrollToLoadMore(ctx context.Context, targetIndex int) error {
 
 	for i := 0; i < scrollTimes; i++ {
 		fmt.Printf("  滚动 %d/%d\n", i+1, scrollTimes)
+
+		// 获取滚动前的链接数量
+		var beforeCount int
+		chromedp.Run(ctx, chromedp.Evaluate(`document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]').length`, &beforeCount))
+
+		// 滚动到底部
 		if err := chromedp.Run(ctx,
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
-			chromedp.Sleep(800*time.Millisecond), // 减少等待时间
 		); err != nil {
 			return err
 		}
+
+		// 等待新内容加载（最多等待 5 秒）
+		loaded := false
+		for attempt := 0; attempt < 10; attempt++ {
+			time.Sleep(500 * time.Millisecond)
+
+			var afterCount int
+			chromedp.Run(ctx, chromedp.Evaluate(`document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]').length`, &afterCount))
+
+			if afterCount > beforeCount {
+				fmt.Printf("    ✓ 加载了 %d 个新帖子\n", afterCount-beforeCount)
+				loaded = true
+				break
+			}
+		}
+
+		if !loaded {
+			fmt.Printf("    ⚠️  未检测到新内容加载\n")
+		}
+
+		// 额外等待一下，确保内容稳定
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	fmt.Println("✓ 滚动完成")
@@ -76,8 +103,12 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 
 	// 滚动加载更多帖子
 	if err := ScrollToLoadMore(ctx, index); err != nil {
-		return "", err
+		return "", fmt.Errorf("滚动加载失败: %w", err)
 	}
+
+	// 额外等待确保 DOM 稳定
+	fmt.Println("等待页面稳定...")
+	time.Sleep(1 * time.Second)
 
 	fmt.Println("正在解析页面...")
 	// 获取页面 HTML
@@ -118,6 +149,8 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 	}
 
 	if len(finalLinks) == 0 {
+		// 记录 HTML 长度以便调试
+		fmt.Printf("⚠️  未找到任何帖子链接 (HTML 长度: %d 字节)\n", len(htmlContent))
 		return "", fmt.Errorf("未找到任何帖子")
 	}
 
@@ -146,12 +179,14 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	if shortcode == "" {
 		return nil, fmt.Errorf("无法从 URL 提取 shortcode: %s", postURL)
 	}
+	fmt.Printf("  shortcode: %s\n", shortcode)
 
 	// 加载 session cookies
 	cookies, err := LoadSession()
 	if err != nil {
 		return nil, fmt.Errorf("加载 session 失败: %v", err)
 	}
+	fmt.Printf("  已加载 %d 个 cookies\n", len(cookies))
 
 	// 构造 GraphQL POST 请求（与 Python instaloader 相同的方式）
 	docID := "8845758582119845"
@@ -198,23 +233,31 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	// 添加 X-CSRFToken 请求头（关键！）
 	if csrfToken != "" {
 		req.Header.Set("X-CSRFToken", csrfToken)
+		fmt.Println("  ✓ 已设置 CSRF Token")
 	} else {
 		return nil, fmt.Errorf("未找到 csrftoken，请重新登录")
 	}
 
 	// 发送请求
+	fmt.Println("  正在调用 Instagram GraphQL API...")
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求失败: %v", err)
+		return nil, fmt.Errorf("GraphQL API 请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
+	fmt.Printf("  API 响应状态: HTTP %d\n", resp.StatusCode)
+
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		bodyStr := string(body)
+		if len(bodyStr) > 200 {
+			bodyStr = bodyStr[:200] + "..."
+		}
+		return nil, fmt.Errorf("GraphQL API 返回错误 HTTP %d: %s", resp.StatusCode, bodyStr)
 	}
 
 	// 解析 JSON 响应
@@ -233,9 +276,11 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	var shortcodeMedia map[string]interface{}
 	if media, ok := data["xdt_shortcode_media"].(map[string]interface{}); ok {
 		shortcodeMedia = media
+		fmt.Println("  ✓ 使用 xdt_shortcode_media 字段")
 	} else if media, ok := data["shortcode_media"].(map[string]interface{}); ok {
 		// 兼容旧版
 		shortcodeMedia = media
+		fmt.Println("  ✓ 使用 shortcode_media 字段（旧版）")
 	} else {
 		return nil, fmt.Errorf("响应中没有 xdt_shortcode_media 或 shortcode_media 字段")
 	}

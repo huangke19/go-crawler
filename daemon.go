@@ -16,6 +16,20 @@ const (
 	logFile = "gobot.log"
 )
 
+// getWorkDir 获取工作目录（优先使用当前目录，如果没有权限则使用用户主目录）
+func getWorkDir() string {
+	// 优先使用当前工作目录
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	// 回退到用户主目录
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".gobot")
+	}
+	// 最后回退到 /tmp
+	return "/tmp"
+}
+
 // StartDaemon 启动守护进程
 func StartDaemon() error {
 	// 检查是否已经在运行
@@ -33,8 +47,16 @@ func StartDaemon() error {
 	// 获取 crawler 可执行文件路径（与 gobot 在同一目录）
 	exePath := filepath.Join(filepath.Dir(executable), "crawler")
 
+	// 获取工作目录
+	workDir := getWorkDir()
+
+	// 如果工作目录不存在则创建
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return fmt.Errorf("创建工作目录失败: %w", err)
+	}
+
 	// 创建日志文件
-	logPath := filepath.Join(filepath.Dir(executable), logFile)
+	logPath := filepath.Join(workDir, logFile)
 	logFd, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("创建日志文件失败: %w", err)
@@ -158,8 +180,7 @@ func StatusDaemon() error {
 	fmt.Printf("PID: %d\n", pid)
 
 	// 显示日志文件路径
-	executable, _ := os.Executable()
-	logPath := filepath.Join(filepath.Dir(executable), logFile)
+	logPath := filepath.Join(getWorkDir(), logFile)
 	if _, err := os.Stat(logPath); err == nil {
 		fmt.Printf("日志文件: %s\n", logPath)
 
@@ -198,7 +219,8 @@ func IsProcessRunning(pid int) bool {
 
 // ReadPID 读取 PID 文件
 func ReadPID() (int, error) {
-	data, err := ioutil.ReadFile(pidFile)
+	pidPath := filepath.Join(getWorkDir(), pidFile)
+	data, err := ioutil.ReadFile(pidPath)
 	if err != nil {
 		return 0, fmt.Errorf("读取 PID 文件失败: %w", err)
 	}
@@ -213,8 +235,9 @@ func ReadPID() (int, error) {
 
 // WritePID 写入 PID 文件
 func WritePID(pid int) error {
+	pidPath := filepath.Join(getWorkDir(), pidFile)
 	data := []byte(strconv.Itoa(pid))
-	if err := ioutil.WriteFile(pidFile, data, 0644); err != nil {
+	if err := ioutil.WriteFile(pidPath, data, 0644); err != nil {
 		return fmt.Errorf("写入 PID 文件失败: %w", err)
 	}
 	return nil
@@ -222,7 +245,8 @@ func WritePID(pid int) error {
 
 // RemovePID 删除 PID 文件
 func RemovePID() {
-	os.Remove(pidFile)
+	pidPath := filepath.Join(getWorkDir(), pidFile)
+	os.Remove(pidPath)
 }
 
 // ShowLastLogs 显示日志文件的最后 N 行

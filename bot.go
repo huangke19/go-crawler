@@ -188,28 +188,48 @@ func (tb *TelegramBot) downloadPost(username string, postIndex int) ([]string, e
 	ctx, cancel := CreateFastBrowserContext()
 	defer cancel()
 
+	// 步骤 1: 验证登录
+	log.Printf("[%s-%d] 步骤 1/5: 验证登录状态", username, postIndex)
 	if err := EnsureLoggedIn(ctx); err != nil {
+		log.Printf("[%s-%d] ❌ 登录验证失败: %v", username, postIndex, err)
 		return nil, fmt.Errorf("登录验证失败: %w", err)
 	}
+	log.Printf("[%s-%d] ✓ 登录验证成功", username, postIndex)
 
+	// 步骤 2: 访问用户主页
+	log.Printf("[%s-%d] 步骤 2/5: 访问用户主页", username, postIndex)
 	if err := NavigateToUser(ctx, username); err != nil {
+		log.Printf("[%s-%d] ❌ 访问用户主页失败: %v", username, postIndex, err)
 		return nil, fmt.Errorf("访问用户主页失败: %w", err)
 	}
+	log.Printf("[%s-%d] ✓ 用户主页加载成功", username, postIndex)
 
+	// 步骤 3: 定位帖子
+	log.Printf("[%s-%d] 步骤 3/5: 定位第 %d 个帖子", username, postIndex, postIndex)
 	postURL, err := GetPostByIndex(ctx, postIndex)
 	if err != nil {
+		log.Printf("[%s-%d] ❌ 获取帖子失败: %v", username, postIndex, err)
 		return nil, fmt.Errorf("获取帖子失败: %w", err)
 	}
+	log.Printf("[%s-%d] ✓ 帖子定位成功: %s", username, postIndex, postURL)
 
+	// 步骤 4: 提取媒体 URL
+	log.Printf("[%s-%d] 步骤 4/5: 提取媒体内容", username, postIndex)
 	mediaInfo, err := ExtractMediaURLs(ctx, postURL)
 	if err != nil {
+		log.Printf("[%s-%d] ❌ 提取媒体失败: %v", username, postIndex, err)
 		return nil, fmt.Errorf("提取媒体失败: %w", err)
 	}
+	log.Printf("[%s-%d] ✓ 媒体提取成功: 类型=%s, 数量=%d", username, postIndex, mediaInfo.Type, len(mediaInfo.URLs))
 
+	// 步骤 5: 下载文件
+	log.Printf("[%s-%d] 步骤 5/5: 下载文件到本地", username, postIndex)
 	files, err := DownloadPostAndReturnPaths(username, postIndex, mediaInfo)
 	if err != nil {
+		log.Printf("[%s-%d] ❌ 下载文件失败: %v", username, postIndex, err)
 		return nil, fmt.Errorf("下载失败: %w", err)
 	}
+	log.Printf("[%s-%d] ✓ 下载完成，共 %d 个文件", username, postIndex, len(files))
 
 	return files, nil
 }
