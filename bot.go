@@ -945,7 +945,7 @@ func (tb *TelegramBot) executeRefreshCache(chatID int64, messageID int, username
 	tb.editMessage(chatID, messageID, fmt.Sprintf("🔄 正在检查 @%s 的更新...", username))
 
 	// 请求 worker 检查更新
-	needRefresh, totalPosts, err := tb.requestWorkerCheckUpdate(username)
+	needRefresh, _, err := tb.requestWorkerCheckUpdate(username)
 	if err != nil {
 		tb.editMessage(chatID, messageID, fmt.Sprintf("❌ 检查更新失败: %v", err))
 		return
@@ -953,15 +953,11 @@ func (tb *TelegramBot) executeRefreshCache(chatID int64, messageID int, username
 
 	if needRefresh {
 		// 有更新，显示结果
-		text := fmt.Sprintf("✅ @%s 有新帖子！\n\n", username)
-		text += fmt.Sprintf("已更新缓存，当前共 %d 条帖子\n", totalPosts)
-		text += "请重新选择帖子序号:"
+		text := fmt.Sprintf("✅ @%s 有新帖子！已更新缓存", username)
 		tb.editMessage(chatID, messageID, text)
 	} else {
 		// 无更新
-		text := fmt.Sprintf("✅ @%s 已是最新\n\n", username)
-		text += fmt.Sprintf("当前共 %d 条帖子\n", totalPosts)
-		text += "请选择帖子序号:"
+		text := fmt.Sprintf("✅ @%s 已是最新", username)
 		tb.editMessage(chatID, messageID, text)
 	}
 
