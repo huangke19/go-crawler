@@ -54,6 +54,7 @@ var (
 func init() {
 	// 确保缓存目录存在
 	os.MkdirAll(cacheDir, 0755)
+	os.MkdirAll(filepath.Join(cacheDir, "thumbnails"), 0755)
 	initCacheMaps()
 }
 
@@ -262,9 +263,16 @@ func SaveFilesToCache(shortcode string, files *FilesCache) error {
 	cache, _ := LoadFilesCache()
 	cache[shortcode] = files
 
-	// 清除历史缓存
+	// 主动更新历史缓存（事件驱动）
 	historyCacheMu.Lock()
-	historyCache = nil
+	if historyCache != nil {
+		// 插入新记录到头部（已按时间倒序）
+		historyCache = append([]*FilesCache{files}, historyCache...)
+		historyCacheTime = time.Now()
+	} else {
+		// 首次加载，下次 GetDownloadHistory 会重新加载并排序
+		historyCache = nil
+	}
 	historyCacheMu.Unlock()
 
 	return SaveFilesCache(cache)
@@ -272,9 +280,9 @@ func SaveFilesToCache(shortcode string, files *FilesCache) error {
 
 // GetDownloadHistory 获取下载历史（按时间倒序）
 func GetDownloadHistory(limit int) []*FilesCache {
-	// 检查内存缓存（5秒有效期）
+	// 检查内存缓存（1分钟有效期）
 	historyCacheMu.RLock()
-	if historyCache != nil && time.Since(historyCacheTime) < 5*time.Second {
+	if historyCache != nil && time.Since(historyCacheTime) < 1*time.Minute {
 		cached := historyCache
 		historyCacheMu.RUnlock()
 		if limit > 0 && len(cached) > limit {

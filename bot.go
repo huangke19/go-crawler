@@ -7,7 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -457,24 +457,99 @@ func (tb *TelegramBot) handleModeSelection(callback *tgbotapi.CallbackQuery, use
 
 // showShortcodeSelection 显示 Shortcode 选择（历史下载列表）
 func (tb *TelegramBot) showShortcodeSelection(chatID int64, username string) {
-	text := fmt.Sprintf("🔖 @%s - 选择 Shortcode\n\n最近下载的帖子:", username)
+	// 获取该用户的所有下载记录
+	history := GetDownloadHistory(0) // 0 = 获取全部
 
-	// 获取下载历史（减少获取数量，提升性能）
-	history := GetDownloadHistory(20)
-
-	var rows [][]tgbotapi.InlineKeyboardButton
-
-	// 过滤出该用户的下载历史（优化：提前返回）
-	count := 0
+	// 先收集该用户的所有记录
+	var userItems []*FilesCache
 	for _, item := range history {
-		if count >= 10 {
-			break // 已经找到 10 条，提前退出
-		}
-
 		if item.Username != username {
 			continue
 		}
+		userItems = append(userItems, item)
+	}
 
+	// 按帖子序号正序排序（第1条、第2条...）
+	sort.Slice(userItems, func(i, j int) bool {
+		// PostIndex 为 0 表示按 shortcode 下载的，放到最后
+		if userItems[i].PostIndex == 0 && userItems[j].PostIndex == 0 {
+			return false // 保持原顺序
+		}
+		if userItems[i].PostIndex == 0 {
+			return false // i 放后面
+		}
+		if userItems[j].PostIndex == 0 {
+			return true // j 放后面
+		}
+		return userItems[i].PostIndex < userItems[j].PostIndex
+	})
+
+	// 限制最多 100 个
+	if len(userItems) > 100 {
+		userItems = userItems[:100]
+	}
+
+	// 批量生成缩略图（并发，5 workers）
+	thumbnails := GenerateThumbnailBatch(userItems, 5)
+
+	// 发送缩略图网格
+	if len(thumbnails) > 0 {
+		tb.sendThumbnailGrid(chatID, userItems, thumbnails)
+	}
+
+	// 发送按钮列表
+	tb.sendShortcodeButtons(chatID, username, userItems)
+}
+
+// sendThumbnailGrid 发送缩略图网格（使用 Telegram MediaGroup API）
+func (tb *TelegramBot) sendThumbnailGrid(chatID int64, items []*FilesCache, thumbnails map[string]string) {
+	// 每 10 个一组（Telegram MediaGroup 限制）
+	for i := 0; i < len(items); i += 10 {
+		end := i + 10
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := items[i:end]
+
+		var mediaGroup []interface{}
+		for _, item := range batch {
+			shortcode := extractShortcodeFromPath(item.Files)
+			thumbnailPath, ok := thumbnails[shortcode]
+			if !ok {
+				continue // 跳过无缩略图的项
+			}
+
+			// 构建 InputMediaPhoto
+			photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(thumbnailPath))
+
+			// 构建 caption：显示序号和 shortcode
+			if item.PostIndex > 0 {
+				photo.Caption = fmt.Sprintf("#%d - %s", item.PostIndex, shortcode)
+			} else {
+				photo.Caption = shortcode
+			}
+
+			mediaGroup = append(mediaGroup, photo)
+		}
+
+		// 发送 MediaGroup
+		if len(mediaGroup) > 0 {
+			msg := tgbotapi.NewMediaGroup(chatID, mediaGroup)
+			if _, err := tb.bot.SendMediaGroup(msg); err != nil {
+				log.Printf("发送缩略图网格失败: %v", err)
+			}
+			time.Sleep(500 * time.Millisecond) // 避免速率限制
+		}
+	}
+}
+
+// sendShortcodeButtons 发送按钮列表
+func (tb *TelegramBot) sendShortcodeButtons(chatID int64, username string, items []*FilesCache) {
+	// 构建按钮
+	var rows [][]tgbotapi.InlineKeyboardButton
+	count := 0
+
+	for _, item := range items {
 		// 获取 shortcode（从文件路径提取）
 		shortcode := extractShortcodeFromPath(item.Files)
 		if shortcode == "" {
@@ -492,8 +567,14 @@ func (tb *TelegramBot) showShortcodeSelection(chatID int64, username string) {
 		count++
 	}
 
-	if len(rows) == 0 {
-		text += "\n\n暂无下载历史"
+	// 动态生成标题
+	text := ""
+	if count == 0 {
+		text = fmt.Sprintf("🔖 @%s - 选择 Shortcode\n\n暂无下载历史", username)
+	} else if len(items) >= 100 {
+		text = fmt.Sprintf("🔖 @%s - 选择 Shortcode\n\n显示前 100 个帖子:", username)
+	} else {
+		text = fmt.Sprintf("🔖 @%s - 选择 Shortcode\n\n共 %d 个帖子:", username, count)
 	}
 
 	msg := tgbotapi.NewMessage(chatID, text)
@@ -506,25 +587,6 @@ func (tb *TelegramBot) showShortcodeSelection(chatID int64, username string) {
 }
 
 // extractShortcodeFromPath 从文件路径中提取 shortcode
-func extractShortcodeFromPath(files []string) string {
-	if len(files) == 0 {
-		return ""
-	}
-
-	// 从路径中提取 shortcode: downloads/cache/SHORTCODE/...
-	parts := strings.Split(files[0], string(filepath.Separator))
-	for i, part := range parts {
-		if part == "cache" && i+1 < len(parts) {
-			shortcode := parts[i+1]
-			// 验证 shortcode 不为空
-			if shortcode != "" && shortcode != "." && shortcode != ".." {
-				return shortcode
-			}
-		}
-	}
-	return ""
-}
-
 // handleShortcodeSelection 处理 Shortcode 选择
 func (tb *TelegramBot) handleShortcodeSelection(callback *tgbotapi.CallbackQuery, shortcode string) {
 	// 立即响应回调，避免超时
@@ -658,6 +720,9 @@ func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex 
 		return
 	}
 
+	// 显示"正在输入"状态
+	tb.sendChatAction(chatID, "typing")
+
 	startTime := time.Now()
 	files, err := tb.requestWorkerDownload(username, postIndex)
 	elapsed := time.Since(startTime)
@@ -671,6 +736,13 @@ func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex 
 		fmt.Sprintf("✅ 下载完成！共 %d 个文件 (耗时: %.2f 秒)\n正在上传...", len(files), elapsed.Seconds()))
 
 	for i, filePath := range files {
+		// 根据文件类型显示不同的上传状态
+		if strings.HasSuffix(filePath, ".mp4") {
+			tb.sendChatAction(chatID, "upload_video")
+		} else {
+			tb.sendChatAction(chatID, "upload_photo")
+		}
+
 		if err := tb.sendFile(chatID, filePath); err != nil {
 			log.Printf("上传文件失败 %s: %v", filePath, err)
 			tb.sendMessage(chatID, fmt.Sprintf("❌ 上传文件 %d 失败", i+1))
@@ -694,6 +766,9 @@ func (tb *TelegramBot) executeDownloadByShortcode(chatID int64, shortcode string
 		return
 	}
 
+	// 显示"正在输入"状态
+	tb.sendChatAction(chatID, "typing")
+
 	startTime := time.Now()
 	files, err := tb.requestWorkerDownloadByShortcode(shortcode)
 	elapsed := time.Since(startTime)
@@ -707,6 +782,13 @@ func (tb *TelegramBot) executeDownloadByShortcode(chatID int64, shortcode string
 		fmt.Sprintf("✅ 下载完成！共 %d 个文件 (耗时: %.2f 秒)\n正在上传...", len(files), elapsed.Seconds()))
 
 	for i, filePath := range files {
+		// 根据文件类型显示不同的上传状态
+		if strings.HasSuffix(filePath, ".mp4") {
+			tb.sendChatAction(chatID, "upload_video")
+		} else {
+			tb.sendChatAction(chatID, "upload_photo")
+		}
+
 		if err := tb.sendFile(chatID, filePath); err != nil {
 			log.Printf("上传文件失败 %s: %v", filePath, err)
 			tb.sendMessage(chatID, fmt.Sprintf("❌ 上传文件 %d 失败", i+1))
@@ -800,6 +882,15 @@ func (tb *TelegramBot) answerCallback(callbackID, text string) {
 		if !strings.Contains(err.Error(), "query is too old") {
 			log.Printf("回应回调失败: %v", err)
 		}
+	}
+}
+
+// sendChatAction 发送聊天动作状态（显示"正在输入"、"正在上传"等）
+func (tb *TelegramBot) sendChatAction(chatID int64, action string) {
+	chatAction := tgbotapi.NewChatAction(chatID, action)
+	if _, err := tb.bot.Send(chatAction); err != nil {
+		// 忽略错误，不影响主流程
+		log.Printf("发送 ChatAction 失败: %v", err)
 	}
 }
 
