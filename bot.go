@@ -693,7 +693,7 @@ func (tb *TelegramBot) requestWorkerDownload(username string, postIndex int) ([]
 		if result.Message == "" {
 			result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		return nil, fmt.Errorf(result.Message)
+		return nil, fmt.Errorf("%s", result.Message)
 	}
 
 	if len(result.FilePaths) == 0 {
@@ -732,7 +732,7 @@ func (tb *TelegramBot) requestWorkerDownloadByShortcode(shortcode string) ([]str
 		if result.Message == "" {
 			result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		return nil, fmt.Errorf(result.Message)
+		return nil, fmt.Errorf("%s", result.Message)
 	}
 
 	if len(result.FilePaths) == 0 {

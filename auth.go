@@ -174,8 +174,14 @@ func CreateBrowserContext() (context.Context, context.CancelFunc) {
 		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
 
-	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	ctx, _ := chromedp.NewContext(allocCtx)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	ctx, ctxCancel := chromedp.NewContext(allocCtx)
+
+	// 返回组合的 cancel 函数
+	cancel := func() {
+		ctxCancel()
+		allocCancel()
+	}
 
 	return ctx, cancel
 }

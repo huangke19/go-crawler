@@ -52,9 +52,10 @@ func DownloadMedia(url, savePath string, retries int) error {
 			lastErr = fmt.Errorf("下载失败: %v", err)
 			continue
 		}
-		defer resp.Body.Close()
 
+		// 检查状态码
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close() // 立即关闭
 			lastErr = fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
 			continue
 		}
@@ -62,13 +63,16 @@ func DownloadMedia(url, savePath string, retries int) error {
 		// 创建文件
 		file, err := os.Create(savePath)
 		if err != nil {
+			resp.Body.Close() // 立即关闭
 			lastErr = fmt.Errorf("创建文件失败: %v", err)
 			continue
 		}
-		defer file.Close()
 
 		// 写入文件
 		_, err = io.Copy(file, resp.Body)
+		file.Close()      // 立即关闭文件
+		resp.Body.Close() // 立即关闭响应体
+
 		if err != nil {
 			lastErr = fmt.Errorf("写入文件失败: %v", err)
 			continue

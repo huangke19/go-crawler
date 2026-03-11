@@ -142,8 +142,14 @@ func (ws *WorkerServer) notifyCookieExpired() {
 			"chat_id": chatID,
 			"text":    message,
 		}
-		body, _ := json.Marshal(payload)
-		httpClient.Post(url, "application/json", bytes.NewReader(body))
+		body, err := json.Marshal(payload)
+		if err != nil {
+			continue
+		}
+		resp, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
+		if err == nil {
+			resp.Body.Close()
+		}
 	}
 }
 
