@@ -306,7 +306,8 @@ func (tb *TelegramBot) handleWorkerControl(callback *tgbotapi.CallbackQuery) {
 	}
 
 	action := strings.TrimPrefix(callback.Data, "ctl:worker:")
-	tb.answerCallback(callback.ID, "处理中...")
+	// 立即响应回调，避免超时
+	tb.answerCallback(callback.ID, "✅ 已接收，处理中...")
 
 	var result string
 	var err error
@@ -482,8 +483,11 @@ func extractShortcodeFromPath(files []string) string {
 
 // handleShortcodeSelection 处理 Shortcode 选择
 func (tb *TelegramBot) handleShortcodeSelection(callback *tgbotapi.CallbackQuery, shortcode string) {
-	tb.answerCallback(callback.ID, "开始下载...")
-	tb.executeDownloadByShortcode(callback.Message.Chat.ID, shortcode)
+	// 立即响应回调，避免超时
+	tb.answerCallback(callback.ID, "✅ 已接收，开始下载...")
+
+	// 异步执行下载任务
+	go tb.executeDownloadByShortcode(callback.Message.Chat.ID, shortcode)
 }
 
 func (tb *TelegramBot) handleCancel(callback *tgbotapi.CallbackQuery) {
@@ -503,8 +507,11 @@ func (tb *TelegramBot) handleIndexSelection(callback *tgbotapi.CallbackQuery, us
 	delete(tb.userStates, userID)
 	tb.statesMutex.Unlock()
 
-	tb.answerCallback(callback.ID, fmt.Sprintf("开始下载第 %d 个帖子", postIndex))
-	tb.executeDownload(callback.Message.Chat.ID, username, postIndex)
+	// 立即响应回调，避免超时
+	tb.answerCallback(callback.ID, fmt.Sprintf("✅ 已接收，开始下载第 %d 个帖子", postIndex))
+
+	// 异步执行下载任务
+	go tb.executeDownload(callback.Message.Chat.ID, username, postIndex)
 }
 
 func (tb *TelegramBot) handleInputRequest(callback *tgbotapi.CallbackQuery, username string) {
@@ -745,7 +752,10 @@ func (tb *TelegramBot) requestWorkerDownloadByShortcode(shortcode string) ([]str
 func (tb *TelegramBot) answerCallback(callbackID, text string) {
 	callback := tgbotapi.NewCallback(callbackID, text)
 	if _, err := tb.bot.Request(callback); err != nil {
-		log.Printf("回应回调失败: %v", err)
+		// 忽略超时错误，避免日志污染
+		if !strings.Contains(err.Error(), "query is too old") {
+			log.Printf("回应回调失败: %v", err)
+		}
 	}
 }
 
