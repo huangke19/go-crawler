@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,41 +16,53 @@ import (
 )
 
 type UserState struct {
-	Step      string    // "waiting_account" - 等待输入账户名, "waiting_index" - 等待输入帖子序号
-	Username  string    // 已选择的账户名
-	Timestamp time.Time // 状态创建时间
+	Step      string
+	Username  string
+	Timestamp time.Time
 }
 
 type TelegramBot struct {
 	bot              *tgbotapi.BotAPI
 	allowedUsers     map[int64]bool
+	adminUsers       map[int64]bool
 	favoriteAccounts []string
 	userStates       map[int64]*UserState
 	statesMutex      sync.RWMutex
+	workerBaseURL    string
 }
 
-func NewTelegramBot(token string, allowedUserIDs []int64, favoriteAccounts []string) (*TelegramBot, error) {
-	bot, err := tgbotapi.NewBotAPI(token)
+func NewTelegramBot(config *Config) (*TelegramBot, error) {
+	bot, err := tgbotapi.NewBotAPI(config.TelegramBotToken)
 	if err != nil {
 		return nil, fmt.Errorf("创建 bot 失败: %w", err)
 	}
 
 	allowedUsers := make(map[int64]bool)
-	for _, id := range allowedUserIDs {
+	for _, id := range config.AllowedUserIDs {
 		allowedUsers[id] = true
 	}
 
-	// 设置默认常用账户
+	adminUsers := make(map[int64]bool)
+	for _, id := range config.AdminUserIDs {
+		adminUsers[id] = true
+	}
+
+	favoriteAccounts := config.FavoriteAccounts
 	if len(favoriteAccounts) == 0 {
 		favoriteAccounts = []string{"nike", "instagram", "natgeo"}
 	}
 
+	workerBaseURL := config.GetWorkerBaseURL()
 	log.Printf("Telegram Bot 已启动: @%s", bot.Self.UserName)
+	log.Printf("Worker 地址: %s", workerBaseURL)
+
 	return &TelegramBot{
 		bot:              bot,
 		allowedUsers:     allowedUsers,
+		adminUsers:       adminUsers,
 		favoriteAccounts: favoriteAccounts,
 		userStates:       make(map[int64]*UserState),
+		workerBaseURL:    workerBaseURL,
 	}, nil
 }
 
@@ -57,7 +73,6 @@ func (tb *TelegramBot) Start() {
 	updates := tb.bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		// 处理回调查询（按钮点击）
 		if update.CallbackQuery != nil {
 			if !tb.isAllowedUser(update.CallbackQuery.From.ID) {
 				tb.answerCallback(update.CallbackQuery.ID, "❌ 未授权访问")
@@ -71,29 +86,32 @@ func (tb *TelegramBot) Start() {
 			continue
 		}
 
-		// 检查用户权限
 		if !tb.isAllowedUser(update.Message.From.ID) {
 			tb.sendMessage(update.Message.Chat.ID, "❌ 未授权访问")
 			log.Printf("未授权用户尝试访问: %d (@%s)", update.Message.From.ID, update.Message.From.UserName)
 			continue
 		}
 
-		// 处理命令
 		if update.Message.IsCommand() {
 			tb.handleCommand(update.Message)
 		} else {
-			// 处理普通消息（可能是用户回复输入）
 			tb.handleMessage(update.Message)
 		}
 	}
 }
 
 func (tb *TelegramBot) isAllowedUser(userID int64) bool {
-	// 如果没有设置白名单，允许所有用户
 	if len(tb.allowedUsers) == 0 {
 		return true
 	}
 	return tb.allowedUsers[userID]
+}
+
+func (tb *TelegramBot) isAdminUser(userID int64) bool {
+	if len(tb.adminUsers) == 0 {
+		return tb.isAllowedUser(userID)
+	}
+	return tb.adminUsers[userID]
 }
 
 func (tb *TelegramBot) handleCommand(message *tgbotapi.Message) {
@@ -109,6 +127,8 @@ func (tb *TelegramBot) handleCommand(message *tgbotapi.Message) {
 		tb.handleHelp(message)
 	case "download", "dl":
 		tb.handleDownload(message, args)
+	case "control":
+		tb.handleControl(message)
 	case "status":
 		tb.handleStatus(message)
 	default:
@@ -128,6 +148,9 @@ func (tb *TelegramBot) handleHelp(message *tgbotapi.Message) {
 	text += "/download - 下载指定帖子（按钮交互）\n"
 	text += "/dl - download 的简写\n"
 	text += "/status - 查看 bot 状态\n"
+	if tb.isAdminUser(message.From.ID) {
+		text += "/control - 控制 worker 启动/停止/重启\n"
+	}
 	text += "/help - 显示帮助信息\n\n"
 	text += "💡 使用方式:\n\n"
 	text += "1️⃣ 发送 /download\n"
@@ -141,97 +164,63 @@ func (tb *TelegramBot) handleStatus(message *tgbotapi.Message) {
 	text := "✅ Bot 运行正常\n\n"
 	text += fmt.Sprintf("Bot 用户名: @%s\n", tb.bot.Self.UserName)
 	text += fmt.Sprintf("你的用户 ID: %d\n", message.From.ID)
+	text += fmt.Sprintf("worker 地址: %s\n", tb.workerBaseURL)
+
+	runtime, err := GetServiceRuntime("worker")
+	if err == nil {
+		if runtime.Running {
+			text += fmt.Sprintf("worker 状态: 运行中 (PID: %d)\n", runtime.PID)
+		} else {
+			text += "worker 状态: 未运行\n"
+		}
+	}
+
 	text += fmt.Sprintf("当前时间: %s", time.Now().Format("2006-01-02 15:04:05"))
 	tb.sendMessage(message.Chat.ID, text)
 }
 
+func (tb *TelegramBot) handleControl(message *tgbotapi.Message) {
+	if !tb.isAdminUser(message.From.ID) {
+		tb.sendMessage(message.Chat.ID, "❌ 仅管理员可使用 /control")
+		return
+	}
+
+	text := "🎛️ Worker 控制面板\n请选择操作:"
+	msg := tgbotapi.NewMessage(message.Chat.ID, text)
+	msg.ReplyMarkup = tb.workerControlKeyboard()
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送控制面板失败: %v", err)
+	}
+}
+
 func (tb *TelegramBot) handleDownload(message *tgbotapi.Message, args []string) {
-	// 取消直接参数输入，统一使用按钮交互
 	if len(args) > 0 {
 		tb.sendMessage(message.Chat.ID, "💡 提示: 请使用按钮选择账户和帖子序号\n直接使用 /download 命令即可")
 		return
 	}
 
-	// 显示账户选择界面
 	text := "📥 请选择要下载的账户:\n"
 
-	// 创建 Inline Keyboard
 	var rows [][]tgbotapi.InlineKeyboardButton
 	var currentRow []tgbotapi.InlineKeyboardButton
 
 	for i, account := range tb.favoriteAccounts {
 		btn := tgbotapi.NewInlineKeyboardButtonData(account, "account:"+account)
 		currentRow = append(currentRow, btn)
-
-		// 每行3个按钮
 		if (i+1)%3 == 0 || i == len(tb.favoriteAccounts)-1 {
 			rows = append(rows, currentRow)
 			currentRow = []tgbotapi.InlineKeyboardButton{}
 		}
 	}
 
-	// 添加"输入其他用户"按钮
 	inputOtherBtn := tgbotapi.NewInlineKeyboardButtonData("📝 输入其他用户", "input_account")
 	rows = append(rows, []tgbotapi.InlineKeyboardButton{inputOtherBtn})
 
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
-
 	msg := tgbotapi.NewMessage(message.Chat.ID, text)
-	msg.ReplyMarkup = keyboard
-
-	tb.bot.Send(msg)
-}
-
-func (tb *TelegramBot) downloadPost(username string, postIndex int) ([]string, error) {
-	log.Printf("开始下载: @%s 第 %d 个帖子", username, postIndex)
-
-	ctx, cancel := CreateFastBrowserContext()
-	defer cancel()
-
-	// 步骤 1: 验证登录
-	log.Printf("[%s-%d] 步骤 1/5: 验证登录状态", username, postIndex)
-	if err := EnsureLoggedIn(ctx); err != nil {
-		log.Printf("[%s-%d] ❌ 登录验证失败: %v", username, postIndex, err)
-		return nil, fmt.Errorf("登录验证失败: %w", err)
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送账户选择失败: %v", err)
 	}
-	log.Printf("[%s-%d] ✓ 登录验证成功", username, postIndex)
-
-	// 步骤 2: 访问用户主页
-	log.Printf("[%s-%d] 步骤 2/5: 访问用户主页", username, postIndex)
-	if err := NavigateToUser(ctx, username); err != nil {
-		log.Printf("[%s-%d] ❌ 访问用户主页失败: %v", username, postIndex, err)
-		return nil, fmt.Errorf("访问用户主页失败: %w", err)
-	}
-	log.Printf("[%s-%d] ✓ 用户主页加载成功", username, postIndex)
-
-	// 步骤 3: 定位帖子
-	log.Printf("[%s-%d] 步骤 3/5: 定位第 %d 个帖子", username, postIndex, postIndex)
-	postURL, err := GetPostByIndex(ctx, postIndex)
-	if err != nil {
-		log.Printf("[%s-%d] ❌ 获取帖子失败: %v", username, postIndex, err)
-		return nil, fmt.Errorf("获取帖子失败: %w", err)
-	}
-	log.Printf("[%s-%d] ✓ 帖子定位成功: %s", username, postIndex, postURL)
-
-	// 步骤 4: 提取媒体 URL
-	log.Printf("[%s-%d] 步骤 4/5: 提取媒体内容", username, postIndex)
-	mediaInfo, err := ExtractMediaURLs(ctx, postURL)
-	if err != nil {
-		log.Printf("[%s-%d] ❌ 提取媒体失败: %v", username, postIndex, err)
-		return nil, fmt.Errorf("提取媒体失败: %w", err)
-	}
-	log.Printf("[%s-%d] ✓ 媒体提取成功: 类型=%s, 数量=%d", username, postIndex, mediaInfo.Type, len(mediaInfo.URLs))
-
-	// 步骤 5: 下载文件
-	log.Printf("[%s-%d] 步骤 5/5: 下载文件到本地", username, postIndex)
-	files, err := DownloadPostAndReturnPaths(username, postIndex, mediaInfo)
-	if err != nil {
-		log.Printf("[%s-%d] ❌ 下载文件失败: %v", username, postIndex, err)
-		return nil, fmt.Errorf("下载失败: %w", err)
-	}
-	log.Printf("[%s-%d] ✓ 下载完成，共 %d 个文件", username, postIndex, len(files))
-
-	return files, nil
 }
 
 func (tb *TelegramBot) sendMessage(chatID int64, text string) tgbotapi.Message {
@@ -245,37 +234,40 @@ func (tb *TelegramBot) sendMessage(chatID int64, text string) tgbotapi.Message {
 
 func (tb *TelegramBot) editMessage(chatID int64, messageID int, text string) {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
-	_, err := tb.bot.Send(edit)
-	if err != nil {
+	if _, err := tb.bot.Send(edit); err != nil {
+		log.Printf("编辑消息失败: %v", err)
+	}
+}
+
+func (tb *TelegramBot) editMessageWithKeyboard(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
+	edit.ReplyMarkup = &keyboard
+	if _, err := tb.bot.Send(edit); err != nil {
 		log.Printf("编辑消息失败: %v", err)
 	}
 }
 
 func (tb *TelegramBot) sendFile(chatID int64, filePath string) error {
-	// 判断文件类型
 	if strings.HasSuffix(filePath, ".mp4") {
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 		_, err := tb.bot.Send(video)
 		return err
-	} else {
-		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
-		_, err := tb.bot.Send(photo)
-		return err
 	}
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
+	_, err := tb.bot.Send(photo)
+	return err
 }
 
-// handleCallback 处理 Inline Keyboard 按钮点击
 func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 	data := callback.Data
 
-	// 解析回调数据
-	if strings.HasPrefix(data, "account:") {
+	switch {
+	case strings.HasPrefix(data, "account:"):
 		username := strings.TrimPrefix(data, "account:")
 		tb.handleAccountSelection(callback, username)
-	} else if data == "input_account" {
+	case data == "input_account":
 		tb.handleInputAccountRequest(callback)
-	} else if strings.HasPrefix(data, "index:") {
-		// 格式: index:username:序号
+	case strings.HasPrefix(data, "index:"):
 		parts := strings.SplitN(data, ":", 3)
 		if len(parts) == 3 {
 			username := parts[1]
@@ -284,39 +276,110 @@ func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 				tb.handleIndexSelection(callback, username, postIndex)
 			}
 		}
-	} else if strings.HasPrefix(data, "input:") {
+	case strings.HasPrefix(data, "input:"):
 		username := strings.TrimPrefix(data, "input:")
 		tb.handleInputRequest(callback, username)
-	} else if strings.HasPrefix(data, "cancel:") {
+	case strings.HasPrefix(data, "cancel:"):
 		tb.handleCancel(callback)
+	case strings.HasPrefix(data, "ctl:worker:"):
+		tb.handleWorkerControl(callback)
 	}
 }
 
-// handleAccountSelection 处理账户选择
+func (tb *TelegramBot) handleWorkerControl(callback *tgbotapi.CallbackQuery) {
+	if !tb.isAdminUser(callback.From.ID) {
+		tb.answerCallback(callback.ID, "❌ 仅管理员可操作")
+		return
+	}
+
+	action := strings.TrimPrefix(callback.Data, "ctl:worker:")
+	tb.answerCallback(callback.ID, "处理中...")
+
+	var result string
+	var err error
+
+	switch action {
+	case "start":
+		result, err = StartServiceDaemon("worker")
+	case "stop":
+		result, err = StopServiceDaemon("worker")
+	case "restart":
+		result, err = RestartServiceDaemon("worker")
+	case "status":
+		result, err = tb.workerStatusSummary()
+	default:
+		err = fmt.Errorf("未知控制动作: %s", action)
+	}
+
+	if err != nil {
+		result = fmt.Sprintf("❌ 操作失败: %v", err)
+	} else {
+		result = "✅ " + result
+	}
+
+	if callback.Message != nil {
+		tb.editMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, result, tb.workerControlKeyboard())
+	} else {
+		tb.sendMessage(callback.From.ID, result)
+	}
+
+	log.Printf("控制操作: user=%d action=%s result=%s", callback.From.ID, action, strings.ReplaceAll(result, "\n", " | "))
+}
+
+func (tb *TelegramBot) workerStatusSummary() (string, error) {
+	runtime, err := GetServiceRuntime("worker")
+	if err != nil {
+		return "", err
+	}
+
+	if !runtime.Running {
+		return "worker 未运行", nil
+	}
+
+	healthOK := tb.checkWorkerHealth()
+	healthText := "健康检查失败"
+	if healthOK {
+		healthText = "健康检查通过"
+	}
+
+	return fmt.Sprintf("worker 运行中 (PID: %d)\n%s\n地址: %s", runtime.PID, healthText, tb.workerBaseURL), nil
+}
+
+func (tb *TelegramBot) workerControlKeyboard() tgbotapi.InlineKeyboardMarkup {
+	row1 := tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("▶️ 启动", "ctl:worker:start"),
+		tgbotapi.NewInlineKeyboardButtonData("⏹ 停止", "ctl:worker:stop"),
+	)
+	row2 := tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("🔄 重启", "ctl:worker:restart"),
+		tgbotapi.NewInlineKeyboardButtonData("📊 状态", "ctl:worker:status"),
+	)
+	return tgbotapi.NewInlineKeyboardMarkup(row1, row2)
+}
+
+func (tb *TelegramBot) checkWorkerHealth() bool {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(tb.workerBaseURL + "/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 func (tb *TelegramBot) handleAccountSelection(callback *tgbotapi.CallbackQuery, username string) {
 	userID := callback.From.ID
 
-	// 保存用户状态
 	tb.statesMutex.Lock()
-	tb.userStates[userID] = &UserState{
-		Step:      "waiting_index",
-		Username:  username,
-		Timestamp: time.Now(),
-	}
+	tb.userStates[userID] = &UserState{Step: "waiting_index", Username: username, Timestamp: time.Now()}
 	tb.statesMutex.Unlock()
 
-	// 回应回调
 	tb.answerCallback(callback.ID, fmt.Sprintf("✅ 已选择: @%s", username))
-
-	// 显示帖子序号选择界面
 	tb.showIndexSelection(callback.Message.Chat.ID, username)
 }
 
-// handleCancel 处理取消操作
 func (tb *TelegramBot) handleCancel(callback *tgbotapi.CallbackQuery) {
 	userID := callback.From.ID
-
-	// 清除用户状态
 	tb.statesMutex.Lock()
 	delete(tb.userStates, userID)
 	tb.statesMutex.Unlock()
@@ -325,89 +388,66 @@ func (tb *TelegramBot) handleCancel(callback *tgbotapi.CallbackQuery) {
 	tb.sendMessage(callback.Message.Chat.ID, "❌ 操作已取消")
 }
 
-// handleIndexSelection 处理帖子序号选择（1-10按钮）
 func (tb *TelegramBot) handleIndexSelection(callback *tgbotapi.CallbackQuery, username string, postIndex int) {
 	userID := callback.From.ID
 
-	// 清除用户状态
 	tb.statesMutex.Lock()
 	delete(tb.userStates, userID)
 	tb.statesMutex.Unlock()
 
-	// 回应回调
 	tb.answerCallback(callback.ID, fmt.Sprintf("开始下载第 %d 个帖子", postIndex))
-
-	// 执行下载
 	tb.executeDownload(callback.Message.Chat.ID, username, postIndex)
 }
 
-// handleInputRequest 处理"输入其他序号"按钮
 func (tb *TelegramBot) handleInputRequest(callback *tgbotapi.CallbackQuery, username string) {
 	userID := callback.From.ID
 
-	// 更新用户状态（保持 waiting_index 状态）
 	tb.statesMutex.Lock()
-	tb.userStates[userID] = &UserState{
-		Step:      "waiting_index",
-		Username:  username,
-		Timestamp: time.Now(),
-	}
+	tb.userStates[userID] = &UserState{Step: "waiting_index", Username: username, Timestamp: time.Now()}
 	tb.statesMutex.Unlock()
 
-	// 回应回调
 	tb.answerCallback(callback.ID, "请输入序号")
 
-	// 发送提示消息
 	text := fmt.Sprintf("✅ 账户: @%s\n\n", username)
 	text += "请输入帖子序号 (大于 10 的数字):"
 
 	msg := tgbotapi.NewMessage(callback.Message.Chat.ID, text)
 	msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true, Selective: true}
-
-	tb.bot.Send(msg)
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送输入序号提示失败: %v", err)
+	}
 }
 
-// handleInputAccountRequest 处理"输入其他用户"按钮
 func (tb *TelegramBot) handleInputAccountRequest(callback *tgbotapi.CallbackQuery) {
 	userID := callback.From.ID
 
-	// 设置用户状态为等待输入账户名
 	tb.statesMutex.Lock()
-	tb.userStates[userID] = &UserState{
-		Step:      "waiting_account",
-		Username:  "",
-		Timestamp: time.Now(),
-	}
+	tb.userStates[userID] = &UserState{Step: "waiting_account", Username: "", Timestamp: time.Now()}
 	tb.statesMutex.Unlock()
 
-	// 回应回调
 	tb.answerCallback(callback.ID, "请输入账户名")
 
-	// 发送提示消息
 	text := "📝 请输入 Instagram 账户名:\n\n"
 	text += "示例: nike, tesla, spacex"
 
 	msg := tgbotapi.NewMessage(callback.Message.Chat.ID, text)
 	msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true, Selective: true}
-
-	tb.bot.Send(msg)
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送输入账户提示失败: %v", err)
+	}
 }
 
-// handleMessage 处理普通消息（用户输入）
 func (tb *TelegramBot) handleMessage(message *tgbotapi.Message) {
 	userID := message.From.ID
 
-	// 检查用户是否有待处理的状态
 	tb.statesMutex.RLock()
 	state, exists := tb.userStates[userID]
 	tb.statesMutex.RUnlock()
 
 	if !exists {
-		// 没有状态，忽略普通消息
 		return
 	}
 
-	// 检查状态是否过期（5分钟）
 	if time.Since(state.Timestamp) > 5*time.Minute {
 		tb.statesMutex.Lock()
 		delete(tb.userStates, userID)
@@ -416,7 +456,6 @@ func (tb *TelegramBot) handleMessage(message *tgbotapi.Message) {
 		return
 	}
 
-	// 处理等待账户名的状态
 	if state.Step == "waiting_account" {
 		username := strings.TrimSpace(message.Text)
 		if username == "" {
@@ -424,21 +463,14 @@ func (tb *TelegramBot) handleMessage(message *tgbotapi.Message) {
 			return
 		}
 
-		// 更新状态，进入选择帖子序号阶段
 		tb.statesMutex.Lock()
-		tb.userStates[userID] = &UserState{
-			Step:      "waiting_index",
-			Username:  username,
-			Timestamp: time.Now(),
-		}
+		tb.userStates[userID] = &UserState{Step: "waiting_index", Username: username, Timestamp: time.Now()}
 		tb.statesMutex.Unlock()
 
-		// 显示帖子序号选择界面
 		tb.showIndexSelection(message.Chat.ID, username)
 		return
 	}
 
-	// 处理等待帖子序号的状态
 	if state.Step == "waiting_index" {
 		postIndex, err := strconv.Atoi(strings.TrimSpace(message.Text))
 		if err != nil || postIndex < 1 {
@@ -446,24 +478,29 @@ func (tb *TelegramBot) handleMessage(message *tgbotapi.Message) {
 			return
 		}
 
-		// 清除状态
 		tb.statesMutex.Lock()
 		delete(tb.userStates, userID)
 		tb.statesMutex.Unlock()
 
-		// 执行下载
 		tb.executeDownload(message.Chat.ID, state.Username, postIndex)
 	}
 }
 
-// executeDownload 执行下载任务
 func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex int) {
-	// 发送处理中消息
 	statusMsg := tb.sendMessage(chatID, fmt.Sprintf("⏳ 正在下载 @%s 的第 %d 个帖子...", username, postIndex))
 
-	// 执行下载
+	runtime, err := GetServiceRuntime("worker")
+	if err != nil {
+		tb.editMessage(chatID, statusMsg.MessageID, fmt.Sprintf("❌ 无法获取 worker 状态: %v", err))
+		return
+	}
+	if !runtime.Running {
+		tb.editMessage(chatID, statusMsg.MessageID, "❌ 下载服务未启动，请联系管理员使用 /control 启动 worker")
+		return
+	}
+
 	startTime := time.Now()
-	files, err := tb.downloadPost(username, postIndex)
+	files, err := tb.requestWorkerDownload(username, postIndex)
 	elapsed := time.Since(startTime)
 
 	if err != nil {
@@ -471,11 +508,9 @@ func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex 
 		return
 	}
 
-	// 更新状态消息
 	tb.editMessage(chatID, statusMsg.MessageID,
 		fmt.Sprintf("✅ 下载完成！共 %d 个文件 (耗时: %.2f 秒)\n正在上传...", len(files), elapsed.Seconds()))
 
-	// 上传文件到 Telegram
 	for i, filePath := range files {
 		if err := tb.sendFile(chatID, filePath); err != nil {
 			log.Printf("上传文件失败 %s: %v", filePath, err)
@@ -483,11 +518,47 @@ func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex 
 		}
 	}
 
-	// 发送完成消息
 	tb.sendMessage(chatID, fmt.Sprintf("✅ 全部完成！共上传 %d 个文件", len(files)))
 }
 
-// answerCallback 回应回调查询
+func (tb *TelegramBot) requestWorkerDownload(username string, postIndex int) ([]string, error) {
+	payload := WorkerDownloadRequest{Username: username, PostIndex: postIndex}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	client := &http.Client{Timeout: 20 * time.Minute}
+	resp, err := client.Post(tb.workerBaseURL+"/download", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("worker 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取 worker 响应失败: %w", err)
+	}
+
+	var result WorkerDownloadResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("解析 worker 响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK || !result.Success {
+		if result.Message == "" {
+			result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf(result.Message)
+	}
+
+	if len(result.FilePaths) == 0 {
+		return nil, fmt.Errorf("worker 未返回文件")
+	}
+
+	return result.FilePaths, nil
+}
+
 func (tb *TelegramBot) answerCallback(callbackID, text string) {
 	callback := tgbotapi.NewCallback(callbackID, text)
 	if _, err := tb.bot.Request(callback); err != nil {
@@ -495,12 +566,10 @@ func (tb *TelegramBot) answerCallback(callbackID, text string) {
 	}
 }
 
-// showIndexSelection 显示帖子序号选择界面
 func (tb *TelegramBot) showIndexSelection(chatID int64, username string) {
 	text := fmt.Sprintf("✅ 已选择账户: @%s\n\n", username)
 	text += "请选择帖子序号:"
 
-	// 创建 1-10 的按钮，每行 5 个
 	row1 := []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("1", fmt.Sprintf("index:%s:1", username)),
 		tgbotapi.NewInlineKeyboardButtonData("2", fmt.Sprintf("index:%s:2", username)),
@@ -520,10 +589,9 @@ func (tb *TelegramBot) showIndexSelection(chatID int64, username string) {
 		tgbotapi.NewInlineKeyboardButtonData("❌ 取消", "cancel:"+username),
 	}
 
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(row1, row2, row3)
-
 	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = keyboard
-
-	tb.bot.Send(msg)
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(row1, row2, row3)
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送序号选择失败: %v", err)
+	}
 }

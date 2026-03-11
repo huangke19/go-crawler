@@ -25,6 +25,8 @@ func main() {
 		handleDownload()
 	case "bot":
 		handleBot()
+	case "worker":
+		handleWorker()
 	case "setup-bot":
 		handleSetupBot()
 	case "version", "-v", "--version":
@@ -46,6 +48,7 @@ func printUsage() {
 	fmt.Println("  crawler download <username> <index>     下载指定用户的第 N 个帖子")
 	fmt.Println("  crawler dl <username> <index>           download 的简写")
 	fmt.Println("  crawler bot                             启动 Telegram Bot 服务")
+	fmt.Println("  crawler worker                          启动 Worker 服务（供 Bot 调用）")
 	fmt.Println("  crawler setup-bot                       显示 Telegram Bot 命令设置指南")
 	fmt.Println("  crawler version                         显示版本信息")
 	fmt.Println("  crawler help                            显示帮助信息")
@@ -55,6 +58,7 @@ func printUsage() {
 	fmt.Println("  crawler download nike 1                 # 下载 @nike 的第 1 个帖子")
 	fmt.Println("  crawler dl instagram 5                  # 下载 @instagram 的第 5 个帖子")
 	fmt.Println("  crawler bot                             # 启动 Telegram Bot")
+	fmt.Println("  crawler worker                          # 启动 Worker 服务")
 	fmt.Println("  crawler setup-bot                       # 设置 Bot 命令菜单")
 	fmt.Println()
 	fmt.Println("选项:")
@@ -154,7 +158,6 @@ func handleBot() {
 	fmt.Println("=== Instagram Telegram Bot ===")
 	fmt.Println()
 
-	// 加载配置
 	config, err := LoadConfig("config.json")
 	if err != nil {
 		fmt.Printf("❌ 加载配置失败: %v\n", err)
@@ -165,8 +168,7 @@ func handleBot() {
 		os.Exit(1)
 	}
 
-	// 创建 bot
-	bot, err := NewTelegramBot(config.TelegramBotToken, config.AllowedUserIDs, config.FavoriteAccounts)
+	bot, err := NewTelegramBot(config)
 	if err != nil {
 		fmt.Printf("❌ 启动 Bot 失败: %v\n", err)
 		os.Exit(1)
@@ -180,6 +182,16 @@ func handleBot() {
 	}
 	fmt.Println()
 
-	// 启动 bot（阻塞）
 	bot.Start()
+}
+
+func handleWorker() {
+	fmt.Println("=== Instagram Worker 服务 ===")
+	fmt.Printf("监听地址: %s\n", getWorkerListenAddr())
+	fmt.Println("✅ Worker 已启动，等待任务...")
+
+	if err := RunWorker(); err != nil {
+		fmt.Printf("❌ Worker 运行失败: %v\n", err)
+		os.Exit(1)
+	}
 }

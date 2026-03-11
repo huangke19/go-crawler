@@ -20,7 +20,9 @@ downloads/
 
 # Daemon files
 .gobot.pid
+.goworker.pid
 gobot.log
+goworker.log
 
 # Build artifacts
 crawler

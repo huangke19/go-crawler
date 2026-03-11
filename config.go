@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 type Config struct {
-	TelegramBotToken   string   `json:"telegram_bot_token"`
-	AllowedUserIDs     []int64  `json:"allowed_user_ids"`
-	FavoriteAccounts   []string `json:"favorite_accounts"`
+	TelegramBotToken string   `json:"telegram_bot_token"`
+	AllowedUserIDs   []int64  `json:"allowed_user_ids"`
+	AdminUserIDs     []int64  `json:"admin_user_ids"`
+	FavoriteAccounts []string `json:"favorite_accounts"`
+	WorkerAddr       string   `json:"worker_addr"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -27,5 +30,28 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("请在 config.json 中配置有效的 telegram_bot_token")
 	}
 
+	if strings.TrimSpace(config.WorkerAddr) == "" {
+		config.WorkerAddr = defaultWorkerListenAddr
+	}
+
+	if len(config.AdminUserIDs) == 0 && len(config.AllowedUserIDs) > 0 {
+		config.AdminUserIDs = append([]int64(nil), config.AllowedUserIDs...)
+	}
+
 	return &config, nil
+}
+
+func (c *Config) GetWorkerAddr() string {
+	if c == nil || strings.TrimSpace(c.WorkerAddr) == "" {
+		return defaultWorkerListenAddr
+	}
+	return strings.TrimSpace(c.WorkerAddr)
+}
+
+func (c *Config) GetWorkerBaseURL() string {
+	addr := c.GetWorkerAddr()
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+	return "http://" + addr
 }
