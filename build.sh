@@ -4,11 +4,11 @@ echo "=== 编译 Instagram Crawler ==="
 
 # 编译主程序
 echo "编译 crawler..."
-go build -o crawler main.go auth.go login.go scraper.go downloader.go bot.go config.go setup_bot.go worker.go daemon.go
+go build -o crawler
 
 # 编译守护进程管理工具
 echo "编译 gobot..."
-go build -o gobot gobot.go daemon.go launchd.go auth.go login.go scraper.go downloader.go bot.go config.go worker.go
+go build -tags gobot -o gobot
 
 echo ""
 echo "✅ 编译完成！"
