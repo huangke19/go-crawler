@@ -156,6 +156,10 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 
 	fmt.Printf("✓ 找到 %d 个帖子\n", len(finalLinks))
 
+	if index < 1 {
+		return "", fmt.Errorf("帖子索引必须大于 0（请求第 %d 条）", index)
+	}
+
 	if index > len(finalLinks) {
 		return "", fmt.Errorf("帖子索引超出范围（共 %d 条帖子，请求第 %d 条）", len(finalLinks), index)
 	}
@@ -322,9 +326,10 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 		return nil, fmt.Errorf("GraphQL API 返回错误 HTTP %d: %s", resp.StatusCode, bodyStr)
 	}
 
-	// 解析 JSON 响应
+	// 解析 JSON 响应（限制最大 10MB，防止内存耗尽）
+	limitedReader := io.LimitReader(resp.Body, 10*1024*1024)
 	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(limitedReader).Decode(&result); err != nil {
 		return nil, fmt.Errorf("解析 JSON 失败: %v", err)
 	}
 

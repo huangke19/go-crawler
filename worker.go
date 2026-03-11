@@ -26,6 +26,7 @@ type WorkerServer struct {
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
 	browserMu     sync.Mutex
+	activeReqs    sync.WaitGroup // 跟踪活跃请求
 }
 
 type WorkerDownloadRequest struct {
@@ -93,6 +94,22 @@ func (ws *WorkerServer) Start() error {
 }
 
 func (ws *WorkerServer) Shutdown(ctx context.Context) error {
+	log.Println("开始优雅关闭 Worker...")
+
+	// 等待所有活跃请求完成（最多等待 30 秒）
+	done := make(chan struct{})
+	go func() {
+		ws.activeReqs.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("所有请求已完成")
+	case <-time.After(30 * time.Second):
+		log.Println("⚠️  等待请求超时，强制关闭")
+	}
+
 	// 关闭浏览器实例
 	ws.browserMu.Lock()
 	if ws.browserCancel != nil {
@@ -162,6 +179,10 @@ func (ws *WorkerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (ws *WorkerServer) handleDownload(w http.ResponseWriter, r *http.Request) {
+	// 跟踪活跃请求
+	ws.activeReqs.Add(1)
+	defer ws.activeReqs.Done()
+
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, WorkerDownloadResponse{Success: false, Message: "仅支持 POST"})
 		return
@@ -369,7 +390,7 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 	}
 
 	// 4. 更新文件缓存，添加用户名和位置信息
-	if filesCache, ok := GetFilesFromCache(shortcode); ok {
+	if filesCache, ok := GetFilesFromCache(shortcode); ok && filesCache != nil {
 		filesCache.Username = username
 		filesCache.PostIndex = postIndex
 		SaveFilesToCache(shortcode, filesCache)

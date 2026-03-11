@@ -74,6 +74,8 @@ func DownloadMedia(url, savePath string, retries int) error {
 		resp.Body.Close() // 立即关闭响应体
 
 		if err != nil {
+			// 删除部分下载的文件
+			os.Remove(savePath)
 			lastErr = fmt.Errorf("写入文件失败: %v", err)
 			continue
 		}

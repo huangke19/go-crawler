@@ -57,14 +57,37 @@ func NewTelegramBot(config *Config) (*TelegramBot, error) {
 	log.Printf("Telegram Bot 已启动: @%s", bot.Self.UserName)
 	log.Printf("Worker 地址: %s", workerBaseURL)
 
-	return &TelegramBot{
+	tb := &TelegramBot{
 		bot:              bot,
 		allowedUsers:     allowedUsers,
 		adminUsers:       adminUsers,
 		favoriteAccounts: favoriteAccounts,
 		userStates:       make(map[int64]*UserState),
 		workerBaseURL:    workerBaseURL,
-	}, nil
+	}
+
+	// 启动状态清理 goroutine
+	go tb.cleanupExpiredStates()
+
+	return tb, nil
+}
+
+// cleanupExpiredStates 定期清理过期的用户状态
+func (tb *TelegramBot) cleanupExpiredStates() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		tb.statesMutex.Lock()
+		now := time.Now()
+		for userID, state := range tb.userStates {
+			if now.Sub(state.Timestamp) > 5*time.Minute {
+				delete(tb.userStates, userID)
+				log.Printf("清理过期状态: user=%d", userID)
+			}
+		}
+		tb.statesMutex.Unlock()
+	}
 }
 
 func (tb *TelegramBot) Start() {
@@ -73,31 +96,48 @@ func (tb *TelegramBot) Start() {
 
 	updates := tb.bot.GetUpdatesChan(u)
 
+	// 添加 panic 恢复，确保 bot 不会崩溃
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("❌ Bot panic 恢复: %v", r)
+			// 可以在这里添加重启逻辑或通知管理员
+		}
+	}()
+
 	for update := range updates {
-		if update.CallbackQuery != nil {
-			if !tb.isAllowedUser(update.CallbackQuery.From.ID) {
-				tb.answerCallback(update.CallbackQuery.ID, "❌ 未授权访问")
-				continue
+		// 为每个更新添加 panic 保护
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("❌ 处理更新时 panic: %v", r)
+				}
+			}()
+
+			if update.CallbackQuery != nil {
+				if !tb.isAllowedUser(update.CallbackQuery.From.ID) {
+					tb.answerCallback(update.CallbackQuery.ID, "❌ 未授权访问")
+					return
+				}
+				tb.handleCallback(update.CallbackQuery)
+				return
 			}
-			tb.handleCallback(update.CallbackQuery)
-			continue
-		}
 
-		if update.Message == nil {
-			continue
-		}
+			if update.Message == nil {
+				return
+			}
 
-		if !tb.isAllowedUser(update.Message.From.ID) {
-			tb.sendMessage(update.Message.Chat.ID, "❌ 未授权访问")
-			log.Printf("未授权用户尝试访问: %d (@%s)", update.Message.From.ID, update.Message.From.UserName)
-			continue
-		}
+			if !tb.isAllowedUser(update.Message.From.ID) {
+				tb.sendMessage(update.Message.Chat.ID, "❌ 未授权访问")
+				log.Printf("未授权用户尝试访问: %d (@%s)", update.Message.From.ID, update.Message.From.UserName)
+				return
+			}
 
-		if update.Message.IsCommand() {
-			tb.handleCommand(update.Message)
-		} else {
-			tb.handleMessage(update.Message)
-		}
+			if update.Message.IsCommand() {
+				tb.handleCommand(update.Message)
+			} else {
+				tb.handleMessage(update.Message)
+			}
+		}()
 	}
 }
 
@@ -475,7 +515,11 @@ func extractShortcodeFromPath(files []string) string {
 	parts := strings.Split(files[0], string(filepath.Separator))
 	for i, part := range parts {
 		if part == "cache" && i+1 < len(parts) {
-			return parts[i+1]
+			shortcode := parts[i+1]
+			// 验证 shortcode 不为空
+			if shortcode != "" && shortcode != "." && shortcode != ".." {
+				return shortcode
+			}
 		}
 	}
 	return ""
