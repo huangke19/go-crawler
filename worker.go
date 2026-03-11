@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -19,12 +21,18 @@ const (
 )
 
 type WorkerServer struct {
-	server *http.Server
+	server        *http.Server
+	config        *Config
+	browserCtx    context.Context
+	browserCancel context.CancelFunc
+	browserMu     sync.Mutex
 }
 
 type WorkerDownloadRequest struct {
-	Username  string `json:"username"`
-	PostIndex int    `json:"post_index"`
+	Username  string `json:"username,omitempty"`
+	PostIndex int    `json:"post_index,omitempty"`
+	Shortcode string `json:"shortcode,omitempty"`
+	Mode      string `json:"mode"` // "index" 或 "shortcode"
 }
 
 type WorkerDownloadResponse struct {
@@ -57,6 +65,11 @@ func NewWorkerServer() *WorkerServer {
 	mux := http.NewServeMux()
 	ws := &WorkerServer{}
 
+	// 尝试加载配置（用于 Cookie 失效通知）
+	if cfg, err := LoadConfig("config.json"); err == nil {
+		ws.config = cfg
+	}
+
 	mux.HandleFunc("/health", ws.handleHealth)
 	mux.HandleFunc("/download", ws.handleDownload)
 
@@ -80,7 +93,58 @@ func (ws *WorkerServer) Start() error {
 }
 
 func (ws *WorkerServer) Shutdown(ctx context.Context) error {
+	// 关闭浏览器实例
+	ws.browserMu.Lock()
+	if ws.browserCancel != nil {
+		ws.browserCancel()
+		log.Println("关闭浏览器实例")
+	}
+	ws.browserMu.Unlock()
+
 	return ws.server.Shutdown(ctx)
+}
+
+// getBrowser 获取或创建浏览器实例（Worker 级别复用）
+func (ws *WorkerServer) getBrowser() (context.Context, error) {
+	ws.browserMu.Lock()
+	defer ws.browserMu.Unlock()
+
+	// 如果浏览器存在且健康，直接返回
+	if ws.browserCtx != nil && ws.browserCtx.Err() == nil {
+		return ws.browserCtx, nil
+	}
+
+	// 如果旧的上下文存在但出错，先清理
+	if ws.browserCancel != nil {
+		ws.browserCancel()
+		log.Println("清理旧的浏览器实例")
+	}
+
+	ctx, cancel := CreateFastBrowserContext()
+	ws.browserCtx = ctx
+	ws.browserCancel = cancel
+	log.Println("创建新的浏览器实例")
+
+	return ws.browserCtx, nil
+}
+
+// notifyCookieExpired 发送 Cookie 失效通知到 Telegram
+func (ws *WorkerServer) notifyCookieExpired() {
+	if ws.config == nil || ws.config.TelegramBotToken == "" {
+		return
+	}
+
+	message := "⚠️ Instagram Cookie 已失效，请运行 ./crawler login 重新登录"
+
+	for _, chatID := range ws.config.AdminUserIDs {
+		url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", ws.config.TelegramBotToken)
+		payload := map[string]interface{}{
+			"chat_id": chatID,
+			"text":    message,
+		}
+		body, _ := json.Marshal(payload)
+		httpClient.Post(url, "application/json", bytes.NewReader(body))
+	}
 }
 
 func (ws *WorkerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -103,20 +167,43 @@ func (ws *WorkerServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.Username = strings.TrimSpace(req.Username)
-	if req.Username == "" {
-		writeJSON(w, http.StatusBadRequest, WorkerDownloadResponse{Success: false, Message: "username 不能为空"})
-		return
+	// 设置默认模式
+	if req.Mode == "" {
+		req.Mode = "index"
 	}
-	if req.PostIndex < 1 {
-		writeJSON(w, http.StatusBadRequest, WorkerDownloadResponse{Success: false, Message: "post_index 必须大于 0"})
+
+	// 验证参数
+	if req.Mode == "index" {
+		req.Username = strings.TrimSpace(req.Username)
+		if req.Username == "" {
+			writeJSON(w, http.StatusBadRequest, WorkerDownloadResponse{Success: false, Message: "username 不能为空"})
+			return
+		}
+		if req.PostIndex < 1 {
+			writeJSON(w, http.StatusBadRequest, WorkerDownloadResponse{Success: false, Message: "post_index 必须大于 0"})
+			return
+		}
+		log.Printf("接收下载任务: @%s 第 %d 个帖子 (按位置模式)", req.Username, req.PostIndex)
+	} else if req.Mode == "shortcode" {
+		req.Shortcode = strings.TrimSpace(req.Shortcode)
+		if req.Shortcode == "" {
+			writeJSON(w, http.StatusBadRequest, WorkerDownloadResponse{Success: false, Message: "shortcode 不能为空"})
+			return
+		}
+		log.Printf("接收下载任务: shortcode=%s (按Shortcode模式)", req.Shortcode)
+	} else {
+		writeJSON(w, http.StatusBadRequest, WorkerDownloadResponse{Success: false, Message: "无效的 mode"})
 		return
 	}
 
-	log.Printf("接收下载任务: @%s 第 %d 个帖子", req.Username, req.PostIndex)
-	files, err := runDownloadTask(req.Username, req.PostIndex)
+	files, err := ws.runDownloadTask(req)
 	if err != nil {
-		log.Printf("下载任务失败: @%s 第 %d 个帖子: %v", req.Username, req.PostIndex, err)
+		// 检测 Cookie 失效
+		if strings.Contains(err.Error(), "Cookie 已失效") {
+			ws.notifyCookieExpired()
+		}
+
+		log.Printf("下载任务失败: %v", err)
 		writeJSON(w, http.StatusInternalServerError, WorkerDownloadResponse{Success: false, Message: err.Error()})
 		return
 	}
@@ -128,28 +215,160 @@ func (ws *WorkerServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func runDownloadTask(username string, postIndex int) ([]string, error) {
-	ctx, cancel := CreateFastBrowserContext()
-	defer cancel()
+func (ws *WorkerServer) runDownloadTask(req WorkerDownloadRequest) ([]string, error) {
+	if req.Mode == "shortcode" {
+		return ws.downloadByShortcode(req.Shortcode)
+	}
+	return ws.downloadByIndex(req.Username, req.PostIndex)
+}
 
-	if err := EnsureLoggedIn(ctx); err != nil {
-		return nil, fmt.Errorf("登录验证失败: %w", err)
+// downloadByShortcode 通过 Shortcode 下载（使用缓存）
+func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) {
+	log.Printf("  检查文件缓存...")
+	// 1. 检查文件缓存
+	if filesCache, ok := GetFilesFromCache(shortcode); ok {
+		log.Printf("  ✓ 文件缓存命中，直接返回 %d 个文件", len(filesCache.Files))
+		return filesCache.Files, nil
 	}
-	if err := NavigateToUser(ctx, username); err != nil {
-		return nil, fmt.Errorf("访问用户主页失败: %w", err)
+
+	log.Printf("  检查媒体URL缓存...")
+	// 2. 检查媒体URL缓存
+	var mediaInfo *MediaInfo
+	if mediaCache, ok := GetMediaFromCache(shortcode); ok {
+		log.Printf("  ✓ 媒体URL缓存命中")
+		mediaInfo = &MediaInfo{
+			Type:  mediaCache.Type,
+			URLs:  mediaCache.URLs,
+			Types: mediaCache.Types,
+		}
+	} else {
+		// 3. 调用 GraphQL API 获取媒体URL
+		log.Printf("  缓存未命中，调用 GraphQL API...")
+		postURL := "https://www.instagram.com/p/" + shortcode + "/"
+		ctx, err := ws.getBrowser()
+		if err != nil {
+			return nil, fmt.Errorf("获取浏览器失败: %w", err)
+		}
+
+		mediaInfo, err = ExtractMediaURLs(ctx, postURL)
+		if err != nil {
+			return nil, fmt.Errorf("提取媒体失败: %w", err)
+		}
+
+		// 保存到媒体缓存
+		SaveMediaToCache(shortcode, &MediaCache{
+			Type:  mediaInfo.Type,
+			URLs:  mediaInfo.URLs,
+			Types: mediaInfo.Types,
+		})
+		log.Printf("  ✓ 已保存媒体URL到缓存")
 	}
-	postURL, err := GetPostByIndex(ctx, postIndex)
-	if err != nil {
-		return nil, fmt.Errorf("获取帖子失败: %w", err)
-	}
-	mediaInfo, err := ExtractMediaURLs(ctx, postURL)
-	if err != nil {
-		return nil, fmt.Errorf("提取媒体失败: %w", err)
-	}
-	files, err := DownloadPostAndReturnPaths(username, postIndex, mediaInfo)
+
+	// 4. 下载文件（使用 shortcode 作为文件名前缀）
+	log.Printf("  开始下载 %d 个文件...", len(mediaInfo.URLs))
+	files, err := downloadMediaByShortcode(shortcode, mediaInfo)
 	if err != nil {
 		return nil, fmt.Errorf("下载失败: %w", err)
 	}
+
+	// 5. 保存文件缓存
+	SaveFilesToCache(shortcode, &FilesCache{
+		Files:        files,
+		DownloadedAt: time.Now(),
+	})
+	log.Printf("  ✓ 已保存文件路径到缓存")
+
+	return files, nil
+}
+
+// downloadByIndex 通过位置下载（使用帖子列表缓存）
+func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]string, error) {
+	log.Printf("  检查帖子列表缓存...")
+	var shortcode string
+
+	// 1. 检查帖子列表缓存
+	if postsCache, ok := GetPostsFromCache(username); ok {
+		log.Printf("  ✓ 帖子列表缓存命中（共 %d 条）", len(postsCache.Posts))
+		for _, post := range postsCache.Posts {
+			if post.Index == postIndex {
+				shortcode = post.Shortcode
+				break
+			}
+		}
+		if shortcode == "" && postIndex > len(postsCache.Posts) {
+			return nil, fmt.Errorf("帖子索引超出范围（共 %d 条帖子，请求第 %d 条）", len(postsCache.Posts), postIndex)
+		}
+	}
+
+	if shortcode == "" {
+		// 2. 缓存过期或不存在，访问主页
+		log.Printf("  缓存未命中，访问用户主页...")
+		ctx, err := ws.getBrowser()
+		if err != nil {
+			return nil, fmt.Errorf("获取浏览器失败: %w", err)
+		}
+
+		if err := EnsureLoggedIn(ctx); err != nil {
+			return nil, fmt.Errorf("登录验证失败: %w", err)
+		}
+
+		if err := NavigateToUser(ctx, username); err != nil {
+			return nil, fmt.Errorf("访问用户主页失败: %w", err)
+		}
+
+		// 获取所有帖子链接
+		postLinks, err := GetAllPostLinks(ctx, postIndex)
+		if err != nil {
+			return nil, fmt.Errorf("获取帖子列表失败: %w", err)
+		}
+
+		// 更新缓存
+		posts := []PostItem{}
+		for i, link := range postLinks {
+			sc := extractShortcode(link)
+			if sc != "" {
+				posts = append(posts, PostItem{
+					Index:     i + 1,
+					Shortcode: sc,
+				})
+			}
+		}
+
+		SavePostsToCache(username, &PostsCache{
+			Posts:     posts,
+			UpdatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+		})
+		log.Printf("  ✓ 已保存帖子列表到缓存（共 %d 条，24小时有效）", len(posts))
+
+		// 获取目标 shortcode
+		for _, post := range posts {
+			if post.Index == postIndex {
+				shortcode = post.Shortcode
+				break
+			}
+		}
+
+		if shortcode == "" {
+			return nil, fmt.Errorf("未找到第 %d 条帖子", postIndex)
+		}
+	}
+
+	log.Printf("  ✓ 获取到 shortcode: %s", shortcode)
+
+	// 3. 使用 shortcode 下载（会使用文件和媒体缓存）
+	files, err := ws.downloadByShortcode(shortcode)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. 更新文件缓存，添加用户名和位置信息
+	if filesCache, ok := GetFilesFromCache(shortcode); ok {
+		filesCache.Username = username
+		filesCache.PostIndex = postIndex
+		SaveFilesToCache(shortcode, filesCache)
+	}
+
 	return files, nil
 }
 

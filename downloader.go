@@ -9,7 +9,18 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// 全局 HTTP 客户端，复用连接
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        20,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
 
 // downloadTask 下载任务
 type downloadTask struct {
@@ -35,8 +46,8 @@ func DownloadMedia(url, savePath string, retries int) error {
 			fmt.Printf("  重试 %d/%d: %s\n", attempt, retries, filepath.Base(savePath))
 		}
 
-		// 发送 HTTP 请求
-		resp, err := http.Get(url)
+		// 发送 HTTP 请求（使用全局客户端）
+		resp, err := httpClient.Get(url)
 		if err != nil {
 			lastErr = fmt.Errorf("下载失败: %v", err)
 			continue
@@ -123,8 +134,8 @@ func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) 
 		}
 	}
 
-	// 并发下载
-	if err := downloadConcurrently(tasks, 5, 1); err != nil {
+	// 并发下载（提升并发数到 10）
+	if err := downloadConcurrently(tasks, 10, 1); err != nil {
 		return nil, err
 	}
 
@@ -132,6 +143,47 @@ func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) 
 	var filePaths []string
 	for _, task := range tasks {
 		filePaths = append(filePaths, task.savePath)
+	}
+
+	return filePaths, nil
+}
+
+// downloadMediaByShortcode 通过 shortcode 下载媒体（用于缓存模式）
+func downloadMediaByShortcode(shortcode string, mediaInfo *MediaInfo) ([]string, error) {
+	// 创建 cache 目录下的 shortcode 子目录
+	cacheDir := filepath.Join("downloads", "cache", shortcode)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建目录失败: %v", err)
+	}
+
+	var tasks []downloadTask
+	var filePaths []string
+
+	for i, url := range mediaInfo.URLs {
+		var ext string
+		if i < len(mediaInfo.Types) && mediaInfo.Types[i] == "video" {
+			ext = ".mp4"
+		} else {
+			ext = ".jpg"
+		}
+
+		var filename string
+		if len(mediaInfo.URLs) == 1 {
+			// 单个文件
+			filename = shortcode + ext
+		} else {
+			// 多个文件
+			filename = fmt.Sprintf("%s_%d%s", shortcode, i+1, ext)
+		}
+
+		savePath := filepath.Join(cacheDir, filename)
+		tasks = append(tasks, downloadTask{url: url, savePath: savePath})
+		filePaths = append(filePaths, savePath)
+	}
+
+	// 并发下载
+	if err := downloadConcurrently(tasks, 10, 1); err != nil {
+		return nil, err
 	}
 
 	return filePaths, nil

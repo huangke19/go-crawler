@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -267,6 +268,14 @@ func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 		tb.handleAccountSelection(callback, username)
 	case data == "input_account":
 		tb.handleInputAccountRequest(callback)
+	case strings.HasPrefix(data, "mode:"):
+		// mode:index:username 或 mode:shortcode:username
+		parts := strings.SplitN(data, ":", 3)
+		if len(parts) == 3 {
+			mode := parts[1]
+			username := parts[2]
+			tb.handleModeSelection(callback, username, mode)
+		}
 	case strings.HasPrefix(data, "index:"):
 		parts := strings.SplitN(data, ":", 3)
 		if len(parts) == 3 {
@@ -276,6 +285,10 @@ func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 				tb.handleIndexSelection(callback, username, postIndex)
 			}
 		}
+	case strings.HasPrefix(data, "sc:"):
+		// sc:shortcode
+		shortcode := strings.TrimPrefix(data, "sc:")
+		tb.handleShortcodeSelection(callback, shortcode)
 	case strings.HasPrefix(data, "input:"):
 		username := strings.TrimPrefix(data, "input:")
 		tb.handleInputRequest(callback, username)
@@ -368,14 +381,109 @@ func (tb *TelegramBot) checkWorkerHealth() bool {
 }
 
 func (tb *TelegramBot) handleAccountSelection(callback *tgbotapi.CallbackQuery, username string) {
-	userID := callback.From.ID
-
-	tb.statesMutex.Lock()
-	tb.userStates[userID] = &UserState{Step: "waiting_index", Username: username, Timestamp: time.Now()}
-	tb.statesMutex.Unlock()
-
 	tb.answerCallback(callback.ID, fmt.Sprintf("✅ 已选择: @%s", username))
-	tb.showIndexSelection(callback.Message.Chat.ID, username)
+	tb.showModeSelection(callback.Message.Chat.ID, username)
+}
+
+// showModeSelection 显示下载模式选择
+func (tb *TelegramBot) showModeSelection(chatID int64, username string) {
+	text := fmt.Sprintf("📥 @%s\n\n请选择下载模式:", username)
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📍 按位置下载", "mode:index:"+username),
+			tgbotapi.NewInlineKeyboardButtonData("🔖 按Shortcode下载", "mode:shortcode:"+username),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送模式选择失败: %v", err)
+	}
+}
+
+// handleModeSelection 处理模式选择
+func (tb *TelegramBot) handleModeSelection(callback *tgbotapi.CallbackQuery, username, mode string) {
+	tb.answerCallback(callback.ID, "")
+
+	if mode == "index" {
+		tb.showIndexSelection(callback.Message.Chat.ID, username)
+	} else if mode == "shortcode" {
+		tb.showShortcodeSelection(callback.Message.Chat.ID, username)
+	}
+}
+
+// showShortcodeSelection 显示 Shortcode 选择（历史下载列表）
+func (tb *TelegramBot) showShortcodeSelection(chatID int64, username string) {
+	text := fmt.Sprintf("🔖 @%s - 选择 Shortcode\n\n最近下载的帖子:", username)
+
+	// 获取下载历史（减少获取数量，提升性能）
+	history := GetDownloadHistory(20)
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+
+	// 过滤出该用户的下载历史（优化：提前返回）
+	count := 0
+	for _, item := range history {
+		if count >= 10 {
+			break // 已经找到 10 条，提前退出
+		}
+
+		if item.Username != username {
+			continue
+		}
+
+		// 获取 shortcode（从文件路径提取）
+		shortcode := extractShortcodeFromPath(item.Files)
+		if shortcode == "" {
+			continue
+		}
+
+		// 构建按钮标签
+		label := shortcode[:8] + "..."
+		if item.PostIndex > 0 {
+			label = fmt.Sprintf("%s (第%d条)", shortcode[:8]+"...", item.PostIndex)
+		}
+
+		btn := tgbotapi.NewInlineKeyboardButtonData(label, "sc:"+shortcode)
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+		count++
+	}
+
+	if len(rows) == 0 {
+		text += "\n\n暂无下载历史"
+	}
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	if len(rows) > 0 {
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	}
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送 Shortcode 选择失败: %v", err)
+	}
+}
+
+// extractShortcodeFromPath 从文件路径中提取 shortcode
+func extractShortcodeFromPath(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+
+	// 从路径中提取 shortcode: downloads/cache/SHORTCODE/...
+	parts := strings.Split(files[0], string(filepath.Separator))
+	for i, part := range parts {
+		if part == "cache" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// handleShortcodeSelection 处理 Shortcode 选择
+func (tb *TelegramBot) handleShortcodeSelection(callback *tgbotapi.CallbackQuery, shortcode string) {
+	tb.answerCallback(callback.ID, "开始下载...")
+	tb.executeDownloadByShortcode(callback.Message.Chat.ID, shortcode)
 }
 
 func (tb *TelegramBot) handleCancel(callback *tgbotapi.CallbackQuery) {
@@ -521,14 +629,89 @@ func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex 
 	tb.sendMessage(chatID, fmt.Sprintf("✅ 全部完成！共上传 %d 个文件", len(files)))
 }
 
+// executeDownloadByShortcode 通过 Shortcode 下载
+func (tb *TelegramBot) executeDownloadByShortcode(chatID int64, shortcode string) {
+	statusMsg := tb.sendMessage(chatID, fmt.Sprintf("⏳ 正在下载 shortcode: %s...", shortcode))
+
+	runtime, err := GetServiceRuntime("worker")
+	if err != nil {
+		tb.editMessage(chatID, statusMsg.MessageID, fmt.Sprintf("❌ 无法获取 worker 状态: %v", err))
+		return
+	}
+	if !runtime.Running {
+		tb.editMessage(chatID, statusMsg.MessageID, "❌ 下载服务未启动，请联系管理员使用 /control 启动 worker")
+		return
+	}
+
+	startTime := time.Now()
+	files, err := tb.requestWorkerDownloadByShortcode(shortcode)
+	elapsed := time.Since(startTime)
+
+	if err != nil {
+		tb.editMessage(chatID, statusMsg.MessageID, fmt.Sprintf("❌ 下载失败: %v", err))
+		return
+	}
+
+	tb.editMessage(chatID, statusMsg.MessageID,
+		fmt.Sprintf("✅ 下载完成！共 %d 个文件 (耗时: %.2f 秒)\n正在上传...", len(files), elapsed.Seconds()))
+
+	for i, filePath := range files {
+		if err := tb.sendFile(chatID, filePath); err != nil {
+			log.Printf("上传文件失败 %s: %v", filePath, err)
+			tb.sendMessage(chatID, fmt.Sprintf("❌ 上传文件 %d 失败", i+1))
+		}
+	}
+
+	tb.sendMessage(chatID, fmt.Sprintf("✅ 全部完成！共上传 %d 个文件", len(files)))
+}
+
 func (tb *TelegramBot) requestWorkerDownload(username string, postIndex int) ([]string, error) {
-	payload := WorkerDownloadRequest{Username: username, PostIndex: postIndex}
+	payload := WorkerDownloadRequest{Username: username, PostIndex: postIndex, Mode: "index"}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}
 
-	client := &http.Client{Timeout: 20 * time.Minute}
+	client := &http.Client{Timeout: 3 * time.Minute}
+	resp, err := client.Post(tb.workerBaseURL+"/download", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("worker 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取 worker 响应失败: %w", err)
+	}
+
+	var result WorkerDownloadResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("解析 worker 响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK || !result.Success {
+		if result.Message == "" {
+			result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf(result.Message)
+	}
+
+	if len(result.FilePaths) == 0 {
+		return nil, fmt.Errorf("worker 未返回文件")
+	}
+
+	return result.FilePaths, nil
+}
+
+// requestWorkerDownloadByShortcode 请求 Worker 通过 Shortcode 下载
+func (tb *TelegramBot) requestWorkerDownloadByShortcode(shortcode string) ([]string, error) {
+	payload := WorkerDownloadRequest{Shortcode: shortcode, Mode: "shortcode"}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	client := &http.Client{Timeout: 3 * time.Minute}
 	resp, err := client.Post(tb.workerBaseURL+"/download", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("worker 请求失败: %w", err)

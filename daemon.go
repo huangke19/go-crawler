@@ -75,9 +75,10 @@ func StartServiceDaemon(service string) (string, error) {
 		return "", err
 	}
 
+	// 检查是否已经运行（防止多实例）
 	if IsServiceRunning(service) {
 		pid, _ := ReadServicePID(service)
-		return fmt.Sprintf("%s 已在运行 (PID: %d)", spec.label, pid), nil
+		return "", fmt.Errorf("%s 已在运行 (PID: %d)，请先停止", spec.label, pid)
 	}
 
 	executable, err := os.Executable()

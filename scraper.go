@@ -163,6 +163,66 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 	return finalLinks[index-1], nil
 }
 
+// GetAllPostLinks 获取用户的所有帖子链接（用于缓存）
+func GetAllPostLinks(ctx context.Context, minCount int) ([]string, error) {
+	fmt.Printf("正在获取帖子列表（至少 %d 条）...\n", minCount)
+
+	// 滚动加载更多帖子
+	if err := ScrollToLoadMore(ctx, minCount); err != nil {
+		return nil, fmt.Errorf("滚动加载失败: %w", err)
+	}
+
+	// 额外等待确保 DOM 稳定
+	fmt.Println("等待页面稳定...")
+	time.Sleep(1 * time.Second)
+
+	fmt.Println("正在解析页面...")
+	// 获取页面 HTML
+	var htmlContent string
+	if err := chromedp.Run(ctx,
+		chromedp.OuterHTML("html", &htmlContent, chromedp.ByQuery),
+	); err != nil {
+		return nil, fmt.Errorf("获取页面 HTML 失败: %v", err)
+	}
+
+	// 使用 goquery 解析
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return nil, fmt.Errorf("解析 HTML 失败: %v", err)
+	}
+
+	// 查找所有帖子链接
+	var postLinks []string
+	doc.Find("a").Each(func(i int, s *goquery.Selection) {
+		href, exists := s.Attr("href")
+		if exists && (strings.Contains(href, "/p/") || strings.Contains(href, "/reel/")) {
+			// 转换为完整 URL
+			if strings.HasPrefix(href, "/") {
+				href = "https://www.instagram.com" + href
+			}
+			postLinks = append(postLinks, href)
+		}
+	})
+
+	// 去重
+	uniqueLinks := make(map[string]bool)
+	var finalLinks []string
+	for _, link := range postLinks {
+		if !uniqueLinks[link] {
+			uniqueLinks[link] = true
+			finalLinks = append(finalLinks, link)
+		}
+	}
+
+	if len(finalLinks) == 0 {
+		fmt.Printf("⚠️  未找到任何帖子链接 (HTML 长度: %d 字节)\n", len(htmlContent))
+		return nil, fmt.Errorf("未找到任何帖子")
+	}
+
+	fmt.Printf("✓ 找到 %d 个帖子\n", len(finalLinks))
+	return finalLinks, nil
+}
+
 // MediaInfo 媒体信息
 type MediaInfo struct {
 	Type  string       // "image", "video" 或 "carousel"
@@ -238,18 +298,20 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 		return nil, fmt.Errorf("未找到 csrftoken，请重新登录")
 	}
 
-	// 发送请求
+	// 发送请求（使用全局客户端）
 	fmt.Println("  正在调用 Instagram GraphQL API...")
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GraphQL API 请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
 	fmt.Printf("  API 响应状态: HTTP %d\n", resp.StatusCode)
+
+	// 检测 Cookie 失效
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return nil, fmt.Errorf("Cookie 已失效 (HTTP %d)，请重新登录", resp.StatusCode)
+	}
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)

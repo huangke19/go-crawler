@@ -192,8 +192,8 @@ func CreateFastBrowserContext() (context.Context, context.CancelFunc) {
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 
-	// 添加 90 秒超时控制
-	timeoutCtx, timeoutCancel := context.WithTimeout(allocCtx, 90*time.Second)
+	// 添加 60 秒超时控制
+	timeoutCtx, timeoutCancel := context.WithTimeout(allocCtx, 60*time.Second)
 
 	ctx, ctxCancel := chromedp.NewContext(timeoutCtx)
 
