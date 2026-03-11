@@ -329,6 +329,9 @@ func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 		// sc:shortcode
 		shortcode := strings.TrimPrefix(data, "sc:")
 		tb.handleShortcodeSelection(callback, shortcode)
+	case strings.HasPrefix(data, "refresh:"):
+		username := strings.TrimPrefix(data, "refresh:")
+		tb.handleRefreshCache(callback, username)
 	case strings.HasPrefix(data, "input:"):
 		username := strings.TrimPrefix(data, "input:")
 		tb.handleInputRequest(callback, username)
@@ -432,7 +435,7 @@ func (tb *TelegramBot) showModeSelection(chatID int64, username string) {
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📍 按位置下载", "mode:index:"+username),
+			tgbotapi.NewInlineKeyboardButtonData("⏰ 按时间线下载", "mode:index:"+username),
 			tgbotapi.NewInlineKeyboardButtonData("🔖 按Shortcode下载", "mode:shortcode:"+username),
 		),
 	)
@@ -895,8 +898,8 @@ func (tb *TelegramBot) sendChatAction(chatID int64, action string) {
 }
 
 func (tb *TelegramBot) showIndexSelection(chatID int64, username string) {
-	text := fmt.Sprintf("✅ 已选择账户: @%s\n\n", username)
-	text += "请选择帖子序号:"
+	text := fmt.Sprintf("⏰ @%s - 按时间线下载\n\n", username)
+	text += "请选择帖子序号 (1=最新):"
 
 	row1 := []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("1", fmt.Sprintf("index:%s:1", username)),
@@ -913,13 +916,101 @@ func (tb *TelegramBot) showIndexSelection(chatID int64, username string) {
 		tgbotapi.NewInlineKeyboardButtonData("10", fmt.Sprintf("index:%s:10", username)),
 	}
 	row3 := []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("🔄 检查更新", "refresh:"+username),
 		tgbotapi.NewInlineKeyboardButtonData("📝 输入其他序号", "input:"+username),
+	}
+	row4 := []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("❌ 取消", "cancel:"+username),
 	}
 
 	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(row1, row2, row3)
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(row1, row2, row3, row4)
 	if _, err := tb.bot.Send(msg); err != nil {
 		log.Printf("发送序号选择失败: %v", err)
 	}
+}
+
+// handleRefreshCache 处理检查更新请求
+func (tb *TelegramBot) handleRefreshCache(callback *tgbotapi.CallbackQuery, username string) {
+	// 立即响应回调
+	tb.answerCallback(callback.ID, "✅ 正在检查更新...")
+
+	// 异步执行检查
+	go tb.executeRefreshCache(callback.Message.Chat.ID, callback.Message.MessageID, username)
+}
+
+// executeRefreshCache 执行缓存刷新检查
+func (tb *TelegramBot) executeRefreshCache(chatID int64, messageID int, username string) {
+	// 更新消息状态
+	tb.editMessage(chatID, messageID, fmt.Sprintf("🔄 正在检查 @%s 的更新...", username))
+
+	// 请求 worker 检查更新
+	needRefresh, totalPosts, err := tb.requestWorkerCheckUpdate(username)
+	if err != nil {
+		tb.editMessage(chatID, messageID, fmt.Sprintf("❌ 检查更新失败: %v", err))
+		return
+	}
+
+	if needRefresh {
+		// 有更新，显示结果
+		text := fmt.Sprintf("✅ @%s 有新帖子！\n\n", username)
+		text += fmt.Sprintf("已更新缓存，当前共 %d 条帖子\n", totalPosts)
+		text += "请重新选择帖子序号:"
+		tb.editMessage(chatID, messageID, text)
+	} else {
+		// 无更新
+		text := fmt.Sprintf("✅ @%s 已是最新\n\n", username)
+		text += fmt.Sprintf("当前共 %d 条帖子\n", totalPosts)
+		text += "请选择帖子序号:"
+		tb.editMessage(chatID, messageID, text)
+	}
+
+	// 重新显示序号选择按钮（发送新消息）
+	time.Sleep(500 * time.Millisecond)
+	tb.showIndexSelection(chatID, username)
+}
+
+// requestWorkerCheckUpdate 请求 Worker 检查更新
+func (tb *TelegramBot) requestWorkerCheckUpdate(username string) (needRefresh bool, totalPosts int, err error) {
+	type CheckUpdateRequest struct {
+		Username string `json:"username"`
+	}
+	type CheckUpdateResponse struct {
+		Success     bool   `json:"success"`
+		Message     string `json:"message,omitempty"`
+		NeedRefresh bool   `json:"need_refresh"`
+		TotalPosts  int    `json:"total_posts"`
+	}
+
+	payload := CheckUpdateRequest{Username: username}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return false, 0, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	client := &http.Client{Timeout: 2 * time.Minute}
+	resp, err := client.Post(tb.workerBaseURL+"/check-update", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return false, 0, fmt.Errorf("worker 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, 0, fmt.Errorf("读取 worker 响应失败: %w", err)
+	}
+
+	var result CheckUpdateResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return false, 0, fmt.Errorf("解析 worker 响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK || !result.Success {
+		if result.Message == "" {
+			result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		return false, 0, fmt.Errorf("%s", result.Message)
+	}
+
+	return result.NeedRefresh, result.TotalPosts, nil
 }

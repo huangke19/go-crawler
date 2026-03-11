@@ -73,6 +73,7 @@ func NewWorkerServer() *WorkerServer {
 
 	mux.HandleFunc("/health", ws.handleHealth)
 	mux.HandleFunc("/download", ws.handleDownload)
+	mux.HandleFunc("/check-update", ws.handleCheckUpdate)
 
 	ws.server = &http.Server{
 		Addr:              getWorkerListenAddr(),
@@ -312,6 +313,7 @@ func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) 
 func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]string, error) {
 	log.Printf("  检查帖子列表缓存...")
 	var shortcode string
+	needRefresh := false
 
 	// 1. 检查帖子列表缓存
 	if postsCache, ok := GetPostsFromCache(username); ok {
@@ -322,14 +324,18 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 				break
 			}
 		}
+		// 如果缓存的帖子数量不足，需要重新加载
 		if shortcode == "" && postIndex > len(postsCache.Posts) {
-			return nil, fmt.Errorf("帖子索引超出范围（共 %d 条帖子，请求第 %d 条）", len(postsCache.Posts), postIndex)
+			log.Printf("  ⚠️  缓存的帖子数量不足（共 %d 条，请求第 %d 条），需要重新加载", len(postsCache.Posts), postIndex)
+			needRefresh = true
 		}
+	} else {
+		needRefresh = true
 	}
 
-	if shortcode == "" {
-		// 2. 缓存过期或不存在，访问主页
-		log.Printf("  缓存未命中，访问用户主页...")
+	if shortcode == "" && needRefresh {
+		// 2. 缓存过期、不存在或数量不足，访问主页
+		log.Printf("  访问用户主页加载更多帖子...")
 		ctx, err := ws.getBrowser()
 		if err != nil {
 			return nil, fmt.Errorf("获取浏览器失败: %w", err)
@@ -343,7 +349,7 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 			return nil, fmt.Errorf("访问用户主页失败: %w", err)
 		}
 
-		// 获取所有帖子链接
+		// 获取所有帖子链接（至少加载到目标索引）
 		postLinks, err := GetAllPostLinks(ctx, postIndex)
 		if err != nil {
 			return nil, fmt.Errorf("获取帖子列表失败: %w", err)
@@ -377,7 +383,7 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 		}
 
 		if shortcode == "" {
-			return nil, fmt.Errorf("未找到第 %d 条帖子", postIndex)
+			return nil, fmt.Errorf("帖子索引超出范围（共 %d 条帖子，请求第 %d 条）", len(posts), postIndex)
 		}
 	}
 
@@ -456,3 +462,136 @@ func workerPortInt() int {
 	port, _ := strconv.Atoi(parseWorkerPort())
 	return port
 }
+
+// handleCheckUpdate 处理检查更新请求
+func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
+	ws.activeReqs.Add(1)
+	defer ws.activeReqs.Done()
+
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"success": false,
+			"message": "仅支持 POST",
+		})
+		return
+	}
+
+	type CheckUpdateRequest struct {
+		Username string `json:"username"`
+	}
+	type CheckUpdateResponse struct {
+		Success     bool   `json:"success"`
+		Message     string `json:"message,omitempty"`
+		NeedRefresh bool   `json:"need_refresh"`
+		TotalPosts  int    `json:"total_posts"`
+	}
+
+	var req CheckUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, CheckUpdateResponse{
+			Success: false,
+			Message: "请求体格式错误",
+		})
+		return
+	}
+
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		writeJSON(w, http.StatusBadRequest, CheckUpdateResponse{
+			Success: false,
+			Message: "username 不能为空",
+		})
+		return
+	}
+
+	log.Printf("接收检查更新请求: @%s", req.Username)
+
+	needRefresh, totalPosts, err := ws.checkCacheUpdate(req.Username)
+	if err != nil {
+		log.Printf("检查更新失败: %v", err)
+		writeJSON(w, http.StatusInternalServerError, CheckUpdateResponse{
+			Success: false,
+			Message: err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, CheckUpdateResponse{
+		Success:     true,
+		NeedRefresh: needRefresh,
+		TotalPosts:  totalPosts,
+	})
+}
+
+// checkCacheUpdate 检查缓存是否需要更新
+func (ws *WorkerServer) checkCacheUpdate(username string) (needRefresh bool, totalPosts int, err error) {
+	log.Printf("  检查 @%s 的缓存状态...", username)
+
+	// 1. 获取缓存中的第1条帖子 shortcode
+	var cachedFirstShortcode string
+	if postsCache, ok := GetPostsFromCache(username); ok {
+		if len(postsCache.Posts) > 0 {
+			cachedFirstShortcode = postsCache.Posts[0].Shortcode
+			log.Printf("  缓存中第1条帖子: %s (共 %d 条)", cachedFirstShortcode, len(postsCache.Posts))
+		}
+	}
+
+	// 2. 访问用户主页，获取实际的第1条帖子
+	log.Printf("  访问用户主页获取最新数据...")
+	ctx, err := ws.getBrowser()
+	if err != nil {
+		return false, 0, fmt.Errorf("获取浏览器失败: %w", err)
+	}
+
+	if err := EnsureLoggedIn(ctx); err != nil {
+		return false, 0, fmt.Errorf("登录验证失败: %w", err)
+	}
+
+	if err := NavigateToUser(ctx, username); err != nil {
+		return false, 0, fmt.Errorf("访问用户主页失败: %w", err)
+	}
+
+	// 获取所有帖子链接（至少获取前12条）
+	postLinks, err := GetAllPostLinks(ctx, 12)
+	if err != nil {
+		return false, 0, fmt.Errorf("获取帖子列表失败: %w", err)
+	}
+
+	if len(postLinks) == 0 {
+		return false, 0, fmt.Errorf("未找到任何帖子")
+	}
+
+	// 提取第1条帖子的 shortcode
+	actualFirstShortcode := extractShortcode(postLinks[0])
+	log.Printf("  实际第1条帖子: %s (共 %d 条)", actualFirstShortcode, len(postLinks))
+
+	// 3. 对比 shortcode
+	if cachedFirstShortcode == "" || cachedFirstShortcode != actualFirstShortcode {
+		// 需要刷新缓存
+		log.Printf("  ✓ 检测到更新，刷新缓存...")
+		posts := []PostItem{}
+		for i, link := range postLinks {
+			sc := extractShortcode(link)
+			if sc != "" {
+				posts = append(posts, PostItem{
+					Index:     i + 1,
+					Shortcode: sc,
+				})
+			}
+		}
+
+		SavePostsToCache(username, &PostsCache{
+			Posts:     posts,
+			UpdatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+		})
+		log.Printf("  ✓ 已更新缓存（共 %d 条）", len(posts))
+
+		return true, len(posts), nil
+	}
+
+	// 无需刷新
+	log.Printf("  ✓ 缓存已是最新")
+	return false, len(postLinks), nil
+}
+

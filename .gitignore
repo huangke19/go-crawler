@@ -11,6 +11,9 @@ config.json
 # Downloaded content
 downloads/
 
+# Cache files
+cache/
+
 # IDE and editor files
 .vscode/
 .idea/
