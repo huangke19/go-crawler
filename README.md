@@ -1,225 +1,422 @@
-# Instagram 爬虫 (go-crawler)
+# Instagram 爬虫工具 (go-crawler)
 
-一个用 Go 语言编写的 Instagram 内容下载工具，支持自动登录和媒体下载功能。
+一个功能强大的 Instagram 内容下载工具，支持命令行操作和 Telegram Bot 远程控制。使用 Go 语言和浏览器自动化技术实现，支持下载图片、视频和轮播帖子。
 
-## 功能特性
+## ✨ 特性
 
-- ✅ 自动化浏览器登录（使用 Chrome/Chromium）
-- ✅ 访问指定用户的 Instagram 主页
-- ✅ 按序号获取用户的帖子
-- ✅ 提取帖子中的图片和视频
-- ✅ 自动下载媒体文件到本地
-- ✅ 支持单个可执行文件分发
+- 🔐 **自动登录管理** - 会话持久化，无需重复登录
+- 📥 **多媒体下载** - 支持图片、视频和轮播帖子
+- 🤖 **Telegram Bot** - 远程控制下载，自动上传到 Telegram
+- 🚀 **并发下载** - 最多 5 个并发，提升下载速度
+- 🔄 **守护进程** - 后台运行，支持启动/停止/重启
+- 💤 **防休眠** - Mac 系统自动防止休眠（使用 caffeinate）
+- 🎯 **精准定位** - 按帖子序号下载指定内容
+- 🔒 **权限控制** - Telegram Bot 支持用户白名单和管理员权限
 
-## 系统要求
+## 📋 系统要求
 
-- **操作系统**: macOS、Linux 或 Windows
-- **Chrome/Chromium**: 需要安装 Chrome 或 Chromium 浏览器
-- **网络**: 能够访问 Instagram 网站
+- Go 1.24.0 或更高版本
+- Chrome 或 Chromium 浏览器
+- macOS / Linux / Windows
+- Instagram 账户
 
-## 安装
+## 🚀 快速开始
 
-### 方式一：使用预编译的可执行文件
-
-直接使用项目中的 `crawler` 文件（已编译，12MB）：
+### 1. 安装依赖
 
 ```bash
-./crawler login      # 首次使用，进行登录
-./crawler nike 5     # 下载 @nike 用户的第 5 条帖子
+# 克隆项目
+git clone <your-repo-url>
+cd go-crawler
+
+# 安装 Go 依赖
+go mod download
 ```
 
-### 方式二：从源代码编译
-
-需要安装 Go 1.24.0 或更高版本：
+### 2. 编译项目
 
 ```bash
-# 编译为当前系统的可执行文件
+# 使用编译脚本（推荐）
+./build.sh
+
+# 或手动编译
 go build -o crawler
-
-# 编译为 Linux 版本
-go build -o crawler-linux -goos=linux -goarch=amd64
-
-# 编译为 Windows 版本
-go build -o crawler.exe -goos=windows -goarch=amd64
+go build -o gobot gobot.go daemon.go launchd.go
 ```
 
-## 使用方法
+### 3. 配置 Telegram Bot（可选）
 
-### 第一步：登录
+如果需要使用 Telegram Bot 功能：
 
-首次使用时，需要进行 Instagram 登录：
+```bash
+# 复制配置模板
+cp config.example.json config.json
+
+# 编辑配置文件
+nano config.json
+```
+
+配置示例：
+
+```json
+{
+  "telegram_bot_token": "YOUR_BOT_TOKEN_HERE",
+  "allowed_user_ids": [123456789],
+  "admin_user_ids": [123456789],
+  "favorite_accounts": ["nike", "apple", "nasa"],
+  "worker_addr": "localhost:18080"
+}
+```
+
+### 4. 首次登录
 
 ```bash
 ./crawler login
 ```
 
-程序会：
-1. 打开 Chrome 浏览器
-2. 导航到 Instagram 登录页面
-3. 等待你手动输入用户名和密码
-4. 完成登录后自动保存会话信息到 `.instagram_session.json`
+这会打开浏览器窗口，手动登录 Instagram 后，会话信息会自动保存到 `.instagram_session.json`。
 
-**注意**: 登录信息会保存在 `.instagram_session.json` 文件中，请妥善保管此文件。
+## 📖 使用方法
 
-### 第二步：下载内容
-
-登录成功后，可以下载指定用户的帖子：
+### 命令行模式
 
 ```bash
-./crawler <目标用户名> <帖子序号>
+# 下载指定用户的第 N 个帖子
+./crawler download <username> <post_index>
+
+# 示例：下载 nike 的第 1 个帖子
+./crawler download nike 1
+
+# 示例：下载 apple 的第 5 个帖子
+./crawler download apple 5
+
+# 使用简写命令
+./crawler dl instagram 3
 ```
 
-**参数说明**:
-- `<目标用户名>`: Instagram 用户名（不需要 @ 符号）
-- `<帖子序号>`: 用户主页上的帖子序号，从 1 开始
+下载的文件会保存到 `downloads/<username>/` 目录。
 
-**使用示例**:
+### Telegram Bot 模式
+
+#### 架构说明
+
+项目采用 **Bot + Worker 双进程架构**：
+
+- **Bot 进程** - 处理 Telegram 消息，管理用户交互
+- **Worker 进程** - HTTP 服务器（默认端口 18080），执行实际下载任务
+- **优势** - 隔离下载逻辑，避免浏览器进程影响 Bot 稳定性
+
+#### 启动服务
 
 ```bash
-# 下载 @nike 用户的第 5 条帖子
-./crawler nike 5
+# 启动 Bot 后台服务
+./gobot start bot
 
-# 下载 @instagram 用户的第 1 条帖子
-./crawler instagram 1
+# 启动 Worker 后台服务
+./gobot start worker
 
-# 下载 @nasa 用户的第 10 条帖子
-./crawler nasa 10
+# 查看服务状态
+./gobot status bot
+./gobot status worker
+
+# 重启服务
+./gobot restart bot
+./gobot restart worker
+
+# 停止服务
+./gobot stop bot
+./gobot stop worker
+
+# 查看日志
+./gobot logs bot
+./gobot logs worker
 ```
 
-### 输出结果
+#### Bot 命令
 
-下载完成后，媒体文件会保存到：
+在 Telegram 中与 Bot 对话：
 
-```
-downloads/<用户名>/post_<序号>/
-```
+- `/start` - 开始使用
+- `/help` - 查看帮助
+- `/download` 或 `/dl` - 开始下载任务
+- `/status` - 查看 Bot 和 Worker 状态
+- `/control` - 控制 Worker 启动/停止/重启（仅管理员）
 
-例如：
-```
-downloads/nike/post_5/
-├── image_1.jpg
-├── image_2.jpg
-└── video_1.mp4
-```
+#### 下载流程
 
-## 工作流程
+1. 发送 `/download` 命令
+2. 选择 Instagram 账户（从收藏列表或手动输入）
+3. 选择帖子序号（1-10 或手动输入）
+4. Bot 自动下载并上传文件到 Telegram
 
-```
-1. 启动程序
-   ↓
-2. 检查会话文件 (.instagram_session.json)
-   ↓
-3. 如果会话有效，跳过登录；否则需要重新登录
-   ↓
-4. 打开浏览器访问目标用户主页
-   ↓
-5. 定位并获取指定序号的帖子链接
-   ↓
-6. 进入帖子页面，提取所有媒体 URL
-   ↓
-7. 下载所有媒体文件到本地
-   ↓
-8. 完成
-```
-
-## 项目结构
+## 📁 项目结构
 
 ```
 go-crawler/
-├── crawler              # 编译后的可执行文件
-├── main.go             # 主程序入口
-├── auth.go             # 认证相关函数
-├── login.go            # 登录相关函数
-├── scraper.go          # 网页爬取相关函数
-├── downloader.go       # 下载相关函数
-├── go.mod              # Go 模块定义
-├── go.sum              # 依赖校验和
-├── .gitignore          # Git 忽略文件
-├── README.md           # 本文件
-└── downloads/          # 下载的媒体文件存储目录
+├── main.go              # 主入口，CLI 参数解析
+├── auth.go              # 认证管理，会话保存/加载
+├── login.go             # 手动登录流程
+├── scraper.go           # 爬取逻辑，提取媒体 URL
+├── downloader.go        # 下载逻辑，并发控制
+├── bot.go               # Telegram Bot 实现
+├── worker.go            # Worker 进程，处理下载任务
+├── config.go            # 配置管理
+├── daemon.go            # 守护进程管理
+├── launchd.go           # macOS launchd 集成
+├── gobot.go             # 守护进程 CLI 工具
+├── setup_bot.go         # Bot 命令菜单设置
+├── build.sh             # 编译脚本
+├── config.json          # 配置文件（需自行创建）
+├── .instagram_session.json  # 会话文件（自动生成）
+├── downloads/           # 下载目录
+├── crawler              # 编译后的主程序
+└── gobot                # 编译后的守护进程管理工具
 ```
 
-## 依赖库
+## 🔧 核心技术
 
-- **chromedp**: 用于浏览器自动化和网页交互
-- **goquery**: 用于 HTML 解析和 DOM 查询
+- **chromedp** - 浏览器自动化，用于登录和页面交互
+- **goquery** - HTML 解析和 DOM 查询
+- **telegram-bot-api** - Telegram Bot 集成
+- **Instagram GraphQL API** - 获取帖子媒体信息（doc_id: 8845758582119845）
 
-## 常见问题
+## 🎯 工作原理
 
-### Q: 程序找不到 Chrome 浏览器怎么办？
+### 登录流程
 
-A: 确保已安装 Chrome 或 Chromium 浏览器。chromedp 会自动查找系统中的浏览器。
+1. 打开浏览器访问 Instagram 登录页
+2. 用户手动输入账号密码
+3. 获取浏览器 Cookie
+4. 保存到 `.instagram_session.json`（权限 0600）
 
-### Q: 登录失败怎么办？
+### 下载流程
 
-A:
-1. 检查网络连接
-2. 确保 Instagram 网站可以访问
-3. 删除 `.instagram_session.json` 文件，重新登录
-4. 检查是否需要进行双因素认证
+1. 加载已保存的会话 Cookie
+2. 创建无头浏览器上下文（禁用图片加载）
+3. 访问用户主页
+4. 滚动加载帖子（每次 12 个）
+5. 定位第 N 个帖子
+6. 调用 Instagram GraphQL API 获取媒体 URL
+7. 并发下载所有媒体文件（最多 5 个并发）
+8. 保存到 `downloads/<username>/` 目录
 
-### Q: 下载速度很慢怎么办？
+### Bot + Worker 架构
 
-A: 这取决于网络速度和媒体文件大小。程序会逐个下载文件，无法加速。
-
-### Q: 可以下载多个用户的内容吗？
-
-A: 可以。登录一次后，可以多次运行程序下载不同用户的内容。
-
-### Q: 如何更新程序？
-
-A:
-```bash
-git pull origin master
-go build -o crawler
+```
+用户 → Telegram Bot → HTTP POST → Worker (localhost:18080)
+                                      ↓
+                                  浏览器自动化
+                                      ↓
+                                  下载媒体文件
+                                      ↓
+Bot ← 文件路径列表 ← HTTP Response ← Worker
+ ↓
+上传到 Telegram
 ```
 
-## 注意事项
+**优势：**
+- Bot 进程轻量，只处理消息
+- Worker 进程独立，可以重启而不影响 Bot
+- 通过 HTTP API 通信，解耦合
+- Worker 可以部署到其他机器
 
-⚠️ **重要提示**:
+## 📝 文件命名规则
 
-1. **遵守法律**: 仅用于个人学习和研究，不得用于商业目的或违反 Instagram 服务条款
-2. **隐私保护**: 尊重他人隐私，不要下载他人的私密内容
-3. **账户安全**: 妥善保管 `.instagram_session.json` 文件，不要分享给他人
-4. **速率限制**: Instagram 可能对频繁请求进行限制，请合理使用
-5. **条款遵守**: 使用前请阅读 Instagram 的服务条款和使用政策
+- 单图片：`post_<index>.jpg`
+- 单视频：`post_<index>.mp4`
+- 轮播图片：`post_<index>_<seq>.jpg`
+- 轮播视频：`post_<index>_<seq>.mp4`
 
-## 故障排除
+示例：
+```
+downloads/nike/
+├── post_1.mp4          # 第 1 个帖子（单视频）
+├── post_2.jpg          # 第 2 个帖子（单图片）
+├── post_3_1.jpg        # 第 3 个帖子（轮播第 1 张）
+├── post_3_2.jpg        # 第 3 个帖子（轮播第 2 张）
+└── post_3_3.mp4        # 第 3 个帖子（轮播第 3 个视频）
+```
 
-### 程序无法启动
+## ⚙️ 配置说明
+
+### config.json
+
+```json
+{
+  "telegram_bot_token": "YOUR_BOT_TOKEN_HERE",
+  "allowed_user_ids": [123456789],
+  "admin_user_ids": [123456789],
+  "favorite_accounts": ["nike", "apple", "nasa"],
+  "worker_addr": "localhost:18080"
+}
+```
+
+- `telegram_bot_token` - Telegram Bot Token（从 @BotFather 获取）
+- `allowed_user_ids` - 允许使用 Bot 的用户 ID 列表（白名单）
+- `admin_user_ids` - 管理员用户 ID 列表（可执行 /control 命令）
+- `favorite_accounts` - 收藏的 Instagram 账户列表（快捷选择）
+- `worker_addr` - Worker 进程监听地址（默认 localhost:18080）
+
+### 获取 Telegram User ID
+
+1. 与 @userinfobot 对话
+2. 发送任意消息
+3. Bot 会返回你的 User ID
+
+## 🛠️ 高级功能
+
+### 跨平台编译
 
 ```bash
-# 检查文件权限
-chmod +x crawler
+# Linux
+GOOS=linux GOARCH=amd64 go build -o crawler-linux
 
-# 尝试直接运行
+# Windows
+GOOS=windows GOARCH=amd64 go build -o crawler.exe
+
+# macOS (Apple Silicon)
+GOOS=darwin GOARCH=arm64 go build -o crawler-mac-arm64
+```
+
+### Mac 防休眠
+
+Bot 和 Worker 启动时自动使用 `caffeinate -i` 防止系统休眠：
+
+```bash
+./gobot start bot     # 自动防止休眠
+./gobot start worker  # 自动防止休眠
+```
+
+只要服务运行，Mac 就不会休眠。停止服务后恢复正常休眠策略。
+
+### 日志管理
+
+```bash
+# 实时查看 Bot 日志
+tail -f gobot.log
+
+# 实时查看 Worker 日志
+tail -f goworker.log
+
+# 查看最近 50 行
+tail -n 50 gobot.log
+
+# 查看完整日志
+./gobot logs bot
+./gobot logs worker
+```
+
+### 守护进程管理
+
+```bash
+# 查看所有服务状态
+./gobot status bot
+./gobot status worker
+
+# 重启所有服务
+./gobot restart bot
+./gobot restart worker
+
+# 停止所有服务
+./gobot stop bot
+./gobot stop worker
+```
+
+## 🐛 故障排除
+
+### 登录失败
+
+```bash
+# 删除旧会话，重新登录
+rm .instagram_session.json
 ./crawler login
 ```
 
-### 浏览器无法打开
+### 爬取失败
 
-```bash
-# 确保 Chrome 已安装
-which google-chrome  # Linux
-which chromium       # Linux
-# macOS 通常在: /Applications/Google Chrome.app
-```
+- 检查用户名是否正确
+- 确认帖子序号在范围内（从 1 开始）
+- 查看是否需要重新登录（会话过期）
+- 检查网络连接
 
 ### 下载失败
 
-1. 检查网络连接
-2. 确认用户名和帖子序号正确
-3. 检查 `downloads/` 目录是否有写入权限
-4. 查看错误信息获取更多细节
+- 检查网络连接
+- 确认 `downloads/` 目录有写入权限
+- 查看错误信息定位问题
 
-## 许可证
+### Bot 无响应
 
-本项目仅供学习和研究使用。
+```bash
+# 查看 Bot 状态
+./gobot status bot
 
-## 支持
+# 查看 Worker 状态
+./gobot status worker
 
-如遇到问题，请检查：
-1. 网络连接
-2. Chrome 浏览器是否已安装
-3. Instagram 账户是否正常
-4. 会话文件是否有效
+# 重启服务
+./gobot restart bot
+./gobot restart worker
+
+# 查看日志
+tail -f gobot.log
+tail -f goworker.log
+```
+
+### Worker 连接失败
+
+1. 确认 Worker 已启动：`./gobot status worker`
+2. 检查端口是否被占用：`lsof -i :18080`
+3. 检查配置文件中的 `worker_addr` 是否正确
+4. 查看 Worker 日志：`tail -f goworker.log`
+
+### 浏览器无法启动
+
+- 确认已安装 Chrome 或 Chromium
+- macOS: `/Applications/Google Chrome.app`
+- Linux: `which google-chrome` 或 `which chromium`
+
+## 📚 相关文档
+
+- [CLAUDE.md](CLAUDE.md) - 项目详细技术文档
+- [USAGE_GUIDE.md](USAGE_GUIDE.md) - 使用指南
+- [TELEGRAM_BOT.md](TELEGRAM_BOT.md) - Telegram Bot 配置
+- [MAC_SLEEP_SOLUTION.md](MAC_SLEEP_SOLUTION.md) - Mac 防休眠方案
+
+## ⚠️ 注意事项
+
+### 安全性
+
+- `.instagram_session.json` 包含敏感信息，已添加到 `.gitignore`
+- 文件权限自动设置为 `0600`（仅所有者可读写）
+- 不要在代码中硬编码账号密码
+- 不要分享你的会话文件和 Bot Token
+- 配置文件 `config.json` 不要提交到 Git
+
+### Instagram 限制
+
+- Instagram 可能对频繁请求进行限制
+- 建议合理控制下载频率
+- 仅支持公开账户或已关注的私密账户
+- 遵守 Instagram 服务条款
+
+### 法律声明
+
+- 本工具仅供学习和个人使用
+- 请遵守 Instagram 服务条款
+- 不要用于商业用途或侵犯他人权益
+- 尊重他人隐私和版权
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+## 📄 许可证
+
+MIT License
+
+## 🙏 致谢
+
+- [chromedp](https://github.com/chromedp/chromedp) - 浏览器自动化
+- [goquery](https://github.com/PuerkitoBio/goquery) - HTML 解析
+- [telegram-bot-api](https://github.com/go-telegram-bot-api/telegram-bot-api) - Telegram Bot SDK
