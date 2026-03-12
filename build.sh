@@ -11,7 +11,13 @@ echo "编译 gobot..."
 go build -tags gobot -o gobot
 
 echo ""
-echo "✅ 编译完成！"
+echo "重启 gobot..."
+gobot restart
+echo "重启 gobot worker..."
+gobot worker restart
+
+echo ""
+echo "✅ 编译完成并已执行 gobot restart 与 gobot worker restart！"
 echo ""
 echo "可执行文件:"
 echo "  ./crawler - 主程序（登录、下载）"
