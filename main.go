@@ -11,8 +11,15 @@ import (
 	"time"
 )
 
+// version 用于 `crawler version` 输出。
+// 这里不做自动注入，便于直接编译/分发；如需与 CI/构建脚本集成，可改为 ldflags 注入。
 const version = "1.0.0"
 
+// main 是 `crawler` 主入口，根据子命令分发到不同的运行模式：
+// - login: 手动登录并保存 Cookie 会话
+// - download/dl: 本地下载（浏览器 + GraphQL + 并发下载）
+// - bot: Telegram 控制面（交互/上传，不执行重下载）
+// - worker: 执行面 HTTP 服务（可复用浏览器、使用缓存）
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -43,6 +50,8 @@ func main() {
 	}
 }
 
+// printUsage 输出帮助信息。CLI 的参数解析按“子命令 + 位置参数”设计，
+// 以便 bot/worker/下载三种模式的入口尽量简洁明确。
 func printUsage() {
 	fmt.Println("Instagram Crawler - 优雅的 Instagram 内容下载工具")
 	fmt.Println()
@@ -69,6 +78,8 @@ func printUsage() {
 	fmt.Println("  -v, --version                           显示版本信息")
 }
 
+// handleLogin 触发手动登录流程：打开有头浏览器，让用户完成登录/验证码/2FA，
+// 并将 Cookie 保存到 `.instagram_session.json`（敏感文件，默认不应提交到 Git）。
 func handleLogin() {
 	fmt.Println("=== Instagram 登录 ===")
 	fmt.Println("浏览器将自动打开，请手动完成登录...")
@@ -82,6 +93,9 @@ func handleLogin() {
 	fmt.Println("✓ 登录成功！会话已保存")
 }
 
+// handleDownload 是本地下载模式入口。
+// 该模式会启动一个“快速无头浏览器上下文”，验证 Cookie 是否有效，然后：
+// 主页定位第 N 条帖子 -> GraphQL 获取媒体 URL -> 并发下载落盘。
 func handleDownload() {
 	downloadCmd := flag.NewFlagSet("download", flag.ExitOnError)
 	downloadCmd.Usage = func() {
@@ -157,6 +171,8 @@ func handleDownload() {
 	fmt.Printf("总耗时: %.2f 秒\n", elapsed.Seconds())
 }
 
+// handleBot 启动 Telegram Bot（控制面）。
+// Bot 负责交互与上传，不直接执行下载；实际下载由 worker 进程完成，以避免 bot 长耗时阻塞。
 func handleBot() {
 	fmt.Println("=== Instagram Telegram Bot ===")
 	fmt.Println()
@@ -188,6 +204,8 @@ func handleBot() {
 	bot.Start()
 }
 
+// handleWorker 启动 Worker HTTP 服务（执行面）。
+// Worker 会复用浏览器实例，并优先使用三层缓存（帖子列表/媒体 URL/文件路径）以减少重复抓取与下载。
 func handleWorker() {
 	fmt.Println("=== Instagram Worker 服务 ===")
 	fmt.Printf("监听地址: %s\n", getWorkerListenAddr())

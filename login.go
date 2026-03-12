@@ -32,7 +32,8 @@ func ManualLogin() error {
 	fmt.Println("登录完成后，回到这里按回车键继续...")
 	fmt.Scanln()
 
-	// 保存 cookies
+	// 保存 cookies。这里直接从浏览器读取当前 cookie jar，
+	// 以便后续在无头上下文中复用登录态调用 GraphQL / 下载资源。
 	fmt.Println("正在保存登录状态...")
 	var cookies []*Cookie
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
