@@ -13,7 +13,11 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// NavigateToUser 访问用户主页
+// NavigateToUser 访问用户主页。
+//
+// 说明：
+// - 主页访问用于“按时间线序号”定位帖子链接（第 1 条=最新）。
+// - 实际媒体 URL（图片/视频）不从主页 HTML 抓取，而是后续通过 GraphQL 接口获取。
 func NavigateToUser(ctx context.Context, username string) error {
 	url := fmt.Sprintf("https://www.instagram.com/%s/", username)
 	fmt.Printf("正在访问 @%s 的主页...\n", username)
@@ -45,7 +49,10 @@ func NavigateToUser(ctx context.Context, username string) error {
 	return nil
 }
 
-// ScrollToLoadMore 滚动页面以加载更多帖子
+// ScrollToLoadMore 滚动页面以加载更多帖子。
+//
+// Instagram 主页通常会按批次懒加载帖子列表（常见每次约 12 条）。
+// 这里用“滚动次数 = targetIndex/12 + 1”的粗略策略，并通过前后链接数量差异判断是否加载成功。
 func ScrollToLoadMore(ctx context.Context, targetIndex int) error {
 	// Instagram 通常每次加载 12 个帖子
 	// 如果目标索引大于 12，需要滚动
@@ -97,7 +104,10 @@ func ScrollToLoadMore(ctx context.Context, targetIndex int) error {
 	return nil
 }
 
-// GetPostByIndex 获取第 N 个帖子的链接（从 1 开始）
+// GetPostByIndex 获取第 N 个帖子的链接（从 1 开始）。
+//
+// 该函数只负责定位帖子 URL（/p/ 或 /reel/），不解析媒体文件地址。
+// 媒体地址需要通过 `ExtractMediaURLs` 调用 GraphQL 获取。
 func GetPostByIndex(ctx context.Context, index int) (string, error) {
 	fmt.Printf("正在定位第 %d 条帖子...\n", index)
 
@@ -167,7 +177,9 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 	return finalLinks[index-1], nil
 }
 
-// GetAllPostLinks 获取用户的所有帖子链接（用于缓存）
+// GetAllPostLinks 获取用户主页的帖子链接列表（用于缓存/刷新）。
+//
+// 参数 minCount 表示“至少需要加载到多少条”；实际返回可能大于 minCount（取决于页面一次性加载数量）。
 func GetAllPostLinks(ctx context.Context, minCount int) ([]string, error) {
 	fmt.Printf("正在获取帖子列表（至少 %d 条）...\n", minCount)
 
@@ -229,12 +241,21 @@ func GetAllPostLinks(ctx context.Context, minCount int) ([]string, error) {
 
 // MediaInfo 媒体信息
 type MediaInfo struct {
-	Type  string       // "image", "video" 或 "carousel"
-	URLs  []string     // 媒体 URL 列表
-	Types []string     // 每个 URL 对应的类型（"image" 或 "video"）
+	Type  string   // "image", "video" 或 "carousel"
+	URLs  []string // 媒体 URL 列表
+	Types []string // 每个 URL 对应的类型（"image" 或 "video"）
 }
 
-// ExtractMediaURLs 提取帖子中的所有媒体 URL（从网页HTML中解析）
+// ExtractMediaURLs 提取帖子中的所有媒体 URL。
+//
+// 这里走的是 Instagram GraphQL（而不是解析页面 HTML），原因：
+// - HTML 结构变化频繁；GraphQL 响应更稳定且能直接拿到原始媒体 URL；
+// - 轮播/视频混合内容在 GraphQL 中更易解析。
+//
+// 关键约束：
+// - 必须携带有效登录 Cookie，尤其是 `csrftoken`；
+// - 请求头必须包含 `X-CSRFToken`，否则常见会被 403/401 拒绝；
+// - 响应字段可能是 `data.xdt_shortcode_media`（新版）或 `data.shortcode_media`（旧版），需兼容。
 func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	fmt.Println("正在提取媒体内容...")
 
@@ -252,7 +273,8 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	}
 	fmt.Printf("  已加载 %d 个 cookies\n", len(cookies))
 
-	// 构造 GraphQL POST 请求（与 Python instaloader 相同的方式）
+	// 构造 GraphQL POST 请求（参考 instaloader 的调用方式）。
+	// doc_id 可能随 Instagram 更新而变化；当出现“接口返回结构变化/无数据”时，这里通常是首要排查点。
 	docID := "8845758582119845"
 	variables := fmt.Sprintf(`{"shortcode":"%s"}`, shortcode)
 
@@ -294,7 +316,8 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 		req.Header.Set("Cookie", strings.Join(cookieStrs, "; "))
 	}
 
-	// 添加 X-CSRFToken 请求头（关键！）
+	// 添加 X-CSRFToken 请求头（关键）。
+	// 没有该头部时，GraphQL 常会直接返回 403/401，即使 Cookie 本身存在。
 	if csrfToken != "" {
 		req.Header.Set("X-CSRFToken", csrfToken)
 		fmt.Println("  ✓ 已设置 CSRF Token")
@@ -339,7 +362,8 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 		return nil, fmt.Errorf("响应中没有 data 字段")
 	}
 
-	// 尝试 xdt_shortcode_media（新版）
+	// 尝试 xdt_shortcode_media（新版）或 shortcode_media（旧版）。
+	// Instagram 会不定期调整字段名，保留兼容分支能显著降低线上中断概率。
 	var shortcodeMedia map[string]interface{}
 	if media, ok := data["xdt_shortcode_media"].(map[string]interface{}); ok {
 		shortcodeMedia = media
@@ -356,7 +380,8 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	return extractMediaFromJSON(shortcodeMedia)
 }
 
-// extractShortcode 从帖子 URL 中提取 shortcode
+// extractShortcode 从帖子 URL 中提取 shortcode。
+// URL 形态可能为 `/p/<shortcode>/` 或 `/reel/<shortcode>/`，这里只做最小假设提取。
 func extractShortcode(postURL string) string {
 	// URL 格式: https://www.instagram.com/xxx/p/SHORTCODE/ 或 /reel/SHORTCODE/
 	parts := strings.Split(postURL, "/")
@@ -369,7 +394,12 @@ func extractShortcode(postURL string) string {
 }
 
 // parseMediaData 从提取的数据中解析媒体信息
-// extractMediaFromJSON 从 JSON 数据中提取媒体 URL
+// extractMediaFromJSON 从 GraphQL 返回的媒体 JSON 中提取媒体 URL。
+//
+// 分支说明：
+// - 单视频：`is_video=true` 且存在 `video_url`
+// - 轮播：`edge_sidecar_to_children.edges[].node`，每个 node 可能是图片或视频
+// - 单图：优先 `display_url`，其次从 `display_resources` 取最大分辨率
 func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 	mediaInfo := &MediaInfo{
 		Type:  "image",
@@ -427,7 +457,10 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 	return nil, fmt.Errorf("未找到任何媒体 URL")
 }
 
-// extractImageURL 从媒体数据中提取图片 URL（优先选择最高质量）
+// extractImageURL 从媒体数据中提取图片 URL（优先选择较高质量）。
+// GraphQL 常见字段：
+// - display_url：通常为较高质量的最终展示图
+// - display_resources：候选列表（一般最后一个最大）
 func extractImageURL(item map[string]interface{}) string {
 	// GraphQL: display_url
 	if displayURL, ok := item["display_url"].(string); ok {

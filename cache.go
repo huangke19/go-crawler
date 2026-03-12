@@ -10,27 +10,40 @@ import (
 
 const cacheDir = "cache"
 
-// MediaCache 媒体URL缓存（永久有效）
+// MediaCache 媒体 URL 缓存（shortcode -> 媒体信息）。
+//
+// 该缓存用于避免重复调用 Instagram GraphQL：
+// - key: shortcode
+// - value: 媒体类型 + URL 列表
+// 一般可视为长期有效；当 Instagram 资源 URL 失效时，可手动清理对应 key。
 type MediaCache struct {
 	Type  string   `json:"type"`
 	URLs  []string `json:"urls"`
 	Types []string `json:"types"`
 }
 
-// PostsCache 用户帖子列表缓存（24小时过期）
+// PostsCache 用户帖子列表缓存（username -> 帖子 shortcodes 列表）。
+//
+// 该缓存用于“按时间线序号下载”的第一步：主页定位第 N 条帖子。
+// - UpdatedAt: 最近一次刷新时间
+// - ExpiresAt: 到期后视为无效（避免长期依赖旧主页结构）
 type PostsCache struct {
 	Posts     []PostItem `json:"posts"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	ExpiresAt time.Time  `json:"expires_at"`
 }
 
-// PostItem 帖子信息
+// PostItem 是帖子在“时间线序号”语义下的定位信息。
+// Index 从 1 开始，1 表示主页最新的一条。
 type PostItem struct {
 	Index     int    `json:"index"`
 	Shortcode string `json:"shortcode"`
 }
 
-// FilesCache 本地文件缓存
+// FilesCache 本地文件缓存（shortcode -> 已下载文件路径）。
+//
+// 这是最快的一层缓存：如果文件仍存在，worker 可以直接返回路径，跳过抓取与下载。
+// Username/PostIndex 用于 bot 侧展示历史下载与“按序号”的溯源信息；按 shortcode 下载时 PostIndex 可能为 0。
 type FilesCache struct {
 	Files        []string  `json:"files"`
 	Username     string    `json:"username"`
@@ -66,7 +79,10 @@ func initCacheMaps() {
 	})
 }
 
-// LoadMediaCache 加载媒体URL缓存
+// LoadMediaCache 加载媒体 URL 缓存。
+// 使用“惰性加载 + 双重检查 + RWMutex”：
+// - 多读少写场景下减少锁竞争；
+// - 第一次读取时从磁盘加载，后续直接走内存 map。
 func LoadMediaCache() (map[string]*MediaCache, error) {
 	mediaCacheMu.RLock()
 	if len(mediaCacheMap) > 0 {
@@ -101,7 +117,8 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 	return mediaCacheMap, nil
 }
 
-// SaveMediaCache 保存媒体URL缓存
+// SaveMediaCache 保存媒体 URL 缓存到 `cache/media_cache.json`。
+// 写入会替换内存 map 引用；调用方应避免持有旧 map 的长生命周期引用。
 func SaveMediaCache(cache map[string]*MediaCache) error {
 	mediaCacheMu.Lock()
 	defer mediaCacheMu.Unlock()
@@ -117,7 +134,8 @@ func SaveMediaCache(cache map[string]*MediaCache) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// LoadPostsCache 加载帖子列表缓存
+// LoadPostsCache 加载帖子列表缓存。
+// 与媒体缓存一致：惰性加载到内存，后续读取无需反复读盘。
 func LoadPostsCache() (map[string]*PostsCache, error) {
 	postsCacheMu.RLock()
 	if len(postsCacheMap) > 0 {
@@ -146,7 +164,7 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 	return postsCacheMap, nil
 }
 
-// SavePostsCache 保存帖子列表缓存
+// SavePostsCache 保存帖子列表缓存到 `cache/posts_cache.json`。
 func SavePostsCache(cache map[string]*PostsCache) error {
 	postsCacheMu.Lock()
 	defer postsCacheMu.Unlock()
@@ -162,7 +180,8 @@ func SavePostsCache(cache map[string]*PostsCache) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// LoadFilesCache 加载文件缓存
+// LoadFilesCache 加载文件缓存（shortcode -> 本地文件路径）。
+// 文件缓存除了读盘外，在 `GetFilesFromCache` 还会做“文件存在性校验”，避免返回已被删除的路径。
 func LoadFilesCache() (map[string]*FilesCache, error) {
 	filesCacheMu.RLock()
 	if len(filesCacheMap) > 0 {
@@ -191,7 +210,7 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 	return filesCacheMap, nil
 }
 
-// SaveFilesCache 保存文件缓存
+// SaveFilesCache 保存文件缓存到 `cache/files_cache.json`。
 func SaveFilesCache(cache map[string]*FilesCache) error {
 	filesCacheMu.Lock()
 	defer filesCacheMu.Unlock()
@@ -207,21 +226,21 @@ func SaveFilesCache(cache map[string]*FilesCache) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// GetMediaFromCache 从缓存获取媒体信息
+// GetMediaFromCache 从媒体缓存获取媒体信息。
 func GetMediaFromCache(shortcode string) (*MediaCache, bool) {
 	cache, _ := LoadMediaCache()
 	media, ok := cache[shortcode]
 	return media, ok
 }
 
-// SaveMediaToCache 保存媒体信息到缓存
+// SaveMediaToCache 保存媒体信息到媒体缓存。
 func SaveMediaToCache(shortcode string, media *MediaCache) error {
 	cache, _ := LoadMediaCache()
 	cache[shortcode] = media
 	return SaveMediaCache(cache)
 }
 
-// GetPostsFromCache 从缓存获取用户帖子列表
+// GetPostsFromCache 从帖子列表缓存获取用户帖子列表（会检查过期时间）。
 func GetPostsFromCache(username string) (*PostsCache, bool) {
 	cache, _ := LoadPostsCache()
 	posts, ok := cache[username]
@@ -235,14 +254,16 @@ func GetPostsFromCache(username string) (*PostsCache, bool) {
 	return posts, true
 }
 
-// SavePostsToCache 保存用户帖子列表到缓存
+// SavePostsToCache 保存用户帖子列表到缓存。
 func SavePostsToCache(username string, posts *PostsCache) error {
 	cache, _ := LoadPostsCache()
 	cache[username] = posts
 	return SavePostsCache(cache)
 }
 
-// GetFilesFromCache 从缓存获取文件列表
+// GetFilesFromCache 从文件缓存获取文件列表。
+// 除了缓存命中外，这里会验证每个文件路径是否仍存在：
+// - 若任意文件缺失，则视为缓存失效，促使 worker 走“重新下载”路径。
 func GetFilesFromCache(shortcode string) (*FilesCache, bool) {
 	cache, _ := LoadFilesCache()
 	files, ok := cache[shortcode]
@@ -258,7 +279,8 @@ func GetFilesFromCache(shortcode string) (*FilesCache, bool) {
 	return files, true
 }
 
-// SaveFilesToCache 保存文件列表到缓存
+// SaveFilesToCache 保存文件列表到缓存，并同步更新“下载历史”的内存缓存。
+// 该函数是事件驱动更新：当写入新下载记录时，尽量避免下一次 bot 侧读取历史还要重新排序全量数据。
 func SaveFilesToCache(shortcode string, files *FilesCache) error {
 	cache, _ := LoadFilesCache()
 	cache[shortcode] = files
@@ -278,7 +300,11 @@ func SaveFilesToCache(shortcode string, files *FilesCache) error {
 	return SaveFilesCache(cache)
 }
 
-// GetDownloadHistory 获取下载历史（按时间倒序）
+// GetDownloadHistory 获取下载历史（按下载时间倒序）。
+//
+// 设计：
+// - 内存缓存 1 分钟，避免 bot 频繁刷新时每次都读盘 + 排序；
+// - 读取时把 `files_cache.json` 的 value 集合拉平为 slice，再按 DownloadedAt 倒序排序。
 func GetDownloadHistory(limit int) []*FilesCache {
 	// 检查内存缓存（1分钟有效期）
 	historyCacheMu.RLock()
@@ -318,7 +344,8 @@ func GetDownloadHistory(limit int) []*FilesCache {
 	return history
 }
 
-// quickSortHistory 快速排序（按时间倒序）
+// quickSortHistory 快速排序（按时间倒序）。
+// 这里用手写排序主要是为了减少额外分配；数据规模一般不大（历史记录数量有限）。
 func quickSortHistory(arr []*FilesCache, low, high int) {
 	if low < high {
 		pivot := partitionHistory(arr, low, high)

@@ -28,7 +28,8 @@ type downloadTask struct {
 	savePath string
 }
 
-// CreateUserDirectory 创建用户下载目录
+// CreateUserDirectory 创建用户下载目录 `downloads/<username>/`。
+// 目录权限使用 0755，便于本机调试与查看；如运行在更严格环境可按需收紧权限。
 func CreateUserDirectory(username string) (string, error) {
 	dirPath := filepath.Join("downloads", username)
 	if err := os.MkdirAll(dirPath, 0755); err != nil {
@@ -37,7 +38,10 @@ func CreateUserDirectory(username string) (string, error) {
 	return dirPath, nil
 }
 
-// DownloadMedia 下载单个媒体文件，支持重试
+// DownloadMedia 下载单个媒体文件，支持重试。
+//
+// 设计要点：
+// - 使用全局 `httpClient` 复用连接，减少大量下载时的握手开销；\n+// - 遇到非 200 或写入失败时会重试；写入失败会删除半成品文件，避免缓存/后续上传拿到损坏文件。
 func DownloadMedia(url, savePath string, retries int) error {
 	var lastErr error
 
@@ -86,18 +90,23 @@ func DownloadMedia(url, savePath string, retries int) error {
 	return lastErr
 }
 
-// DownloadPost 下载帖子的所有媒体（并发下载）
+// DownloadPost 下载帖子的所有媒体（并发下载）。
+// 文件命名规则：
+// - 单图：post_<index>.jpg
+// - 单视频：post_<index>.mp4
+// - 轮播：post_<index>_<seq>.jpg 或 .mp4
 func DownloadPost(username string, postIndex int, mediaInfo *MediaInfo) error {
 	_, err := downloadPostInternal(username, postIndex, mediaInfo)
 	return err
 }
 
-// DownloadPostAndReturnPaths 下载帖子并返回文件路径列表（用于 Telegram Bot）
+// DownloadPostAndReturnPaths 下载帖子并返回文件路径列表（用于 Telegram Bot 上传）。
 func DownloadPostAndReturnPaths(username string, postIndex int, mediaInfo *MediaInfo) ([]string, error) {
 	return downloadPostInternal(username, postIndex, mediaInfo)
 }
 
-// downloadPostInternal 内部下载函数，返回文件路径列表
+// downloadPostInternal 内部下载函数，返回文件路径列表。
+// 注意：这里不做去重/断点续传；如果需要“重复调用秒回”，应由上层文件缓存（`files_cache.json`）负责。
 func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) ([]string, error) {
 	// 创建用户目录
 	userDir, err := CreateUserDirectory(username)
@@ -154,7 +163,8 @@ func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) 
 	return filePaths, nil
 }
 
-// downloadMediaByShortcode 通过 shortcode 下载媒体（用于缓存模式）
+// downloadMediaByShortcode 通过 shortcode 下载媒体（用于缓存模式）。
+// 该模式把落盘路径固定为 `downloads/cache/<shortcode>/...`，便于 “按 shortcode 下载” 直接命中文件缓存。
 func downloadMediaByShortcode(shortcode string, mediaInfo *MediaInfo) ([]string, error) {
 	// 创建 cache 目录下的 shortcode 子目录
 	cacheDir := filepath.Join("downloads", "cache", shortcode)
@@ -195,7 +205,10 @@ func downloadMediaByShortcode(shortcode string, mediaInfo *MediaInfo) ([]string,
 	return filePaths, nil
 }
 
-// downloadConcurrently 并发下载多个文件
+// downloadConcurrently 并发下载多个文件。
+//
+// maxConcurrent 为并发上限（通过信号量 channel 控制），避免对网络/磁盘造成过大压力或触发对端限流。
+// retries 传递到 `DownloadMedia`，用于对瞬时网络问题进行有限次重试。
 func downloadConcurrently(tasks []downloadTask, maxConcurrent int, retries int) error {
 	totalFiles := len(tasks)
 	var completed int32
@@ -243,7 +256,8 @@ func downloadConcurrently(tasks []downloadTask, maxConcurrent int, retries int) 
 	return nil
 }
 
-// GetFileExtension 从 URL 获取文件扩展名
+// GetFileExtension 从 URL 获取文件扩展名。
+// 该函数目前主要用于“兜底推断”，真实扩展名优先依据媒体类型（image/video）决定。
 func GetFileExtension(url string) string {
 	// 移除查询参数
 	if idx := strings.Index(url, "?"); idx != -1 {

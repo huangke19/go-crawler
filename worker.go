@@ -20,6 +20,10 @@ const (
 	defaultWorkerListenAddr = "127.0.0.1:18080"
 )
 
+// WorkerServer 是下载执行面 HTTP 服务。
+//
+// 设计要点：
+// - Worker 负责“耗时且可能阻塞”的抓取与下载逻辑；Bot 只做交互与文件上传。\n+// - Worker 复用一个无头浏览器实例（避免每个请求都启动 Chrome）；\n+// - 通过 activeReqs 跟踪活跃请求，实现优雅关闭（尽量不半途打断下载）。
 type WorkerServer struct {
 	server        *http.Server
 	config        *Config
@@ -29,6 +33,8 @@ type WorkerServer struct {
 	activeReqs    sync.WaitGroup // 跟踪活跃请求
 }
 
+// WorkerDownloadRequest 是 Bot/CLI 调用 Worker 的下载请求体。
+// - mode=index：按用户主页时间线序号下载（需要 username + post_index）\n+// - mode=shortcode：按 shortcode 下载（只需要 shortcode）
 type WorkerDownloadRequest struct {
 	Username  string `json:"username,omitempty"`
 	PostIndex int    `json:"post_index,omitempty"`
@@ -36,12 +42,14 @@ type WorkerDownloadRequest struct {
 	Mode      string `json:"mode"` // "index" 或 "shortcode"
 }
 
+// WorkerDownloadResponse 是下载结果响应体。\n+// 成功时返回 file_paths（本机文件绝对/相对路径，供 bot 上传）。
 type WorkerDownloadResponse struct {
 	Success   bool     `json:"success"`
 	Message   string   `json:"message,omitempty"`
 	FilePaths []string `json:"file_paths,omitempty"`
 }
 
+// getWorkerListenAddr 获取 worker 监听地址。\n+// 优先级：环境变量 `CRAWLER_WORKER_ADDR` > config.json 的 worker_addr > 默认值。
 func getWorkerListenAddr() string {
 	if value := strings.TrimSpace(os.Getenv("CRAWLER_WORKER_ADDR")); value != "" {
 		return value
@@ -62,6 +70,10 @@ func getWorkerListenAddr() string {
 	return defaultWorkerListenAddr
 }
 
+// NewWorkerServer 构建 worker HTTP 服务并注册路由：
+// - /health：健康检查
+// - /download：执行下载任务
+// - /check-update：检查主页是否有更新并刷新帖子列表缓存
 func NewWorkerServer() *WorkerServer {
 	mux := http.NewServeMux()
 	ws := &WorkerServer{}
@@ -86,6 +98,7 @@ func NewWorkerServer() *WorkerServer {
 	return ws
 }
 
+// Start 启动 HTTP 服务（阻塞）。
 func (ws *WorkerServer) Start() error {
 	log.Printf("Worker 服务启动: http://%s", ws.server.Addr)
 	if err := ws.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -94,6 +107,8 @@ func (ws *WorkerServer) Start() error {
 	return nil
 }
 
+// Shutdown 优雅关闭 worker：
+// - 最多等待 30 秒让活跃请求完成\n+// - 关闭复用的浏览器上下文\n+// - 关闭 HTTP server
 func (ws *WorkerServer) Shutdown(ctx context.Context) error {
 	log.Println("开始优雅关闭 Worker...")
 
@@ -122,7 +137,10 @@ func (ws *WorkerServer) Shutdown(ctx context.Context) error {
 	return ws.server.Shutdown(ctx)
 }
 
-// getBrowser 获取或创建浏览器实例（Worker 级别复用）
+// getBrowser 获取或创建浏览器实例（Worker 级别复用）。
+//
+// 该浏览器实例用于：
+// - 访问用户主页获取帖子 shortcode 列表（按序号下载/刷新缓存）\n+// - 在媒体缓存未命中时，调用 GraphQL 获取媒体 URL
 func (ws *WorkerServer) getBrowser() (context.Context, error) {
 	ws.browserMu.Lock()
 	defer ws.browserMu.Unlock()
@@ -146,7 +164,8 @@ func (ws *WorkerServer) getBrowser() (context.Context, error) {
 	return ws.browserCtx, nil
 }
 
-// notifyCookieExpired 发送 Cookie 失效通知到 Telegram
+// notifyCookieExpired 发送 Cookie 失效通知到 Telegram。
+// 目的：当 worker 在 GraphQL 请求中检测到 401/403 时，主动提醒管理员重新执行 `crawler login`。
 func (ws *WorkerServer) notifyCookieExpired() {
 	if ws.config == nil || ws.config.TelegramBotToken == "" {
 		return
@@ -171,6 +190,7 @@ func (ws *WorkerServer) notifyCookieExpired() {
 	}
 }
 
+// handleHealth 提供健康检查接口。\n+// Bot 会用它判断 worker 是否在线（避免用户点击后才发现服务未启动）。
 func (ws *WorkerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
@@ -179,6 +199,8 @@ func (ws *WorkerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// handleDownload 是 worker 的核心入口：执行下载任务并返回文件路径列表。
+// 该接口设计为同步返回，调用方（Bot）在收到响应后再进行上传。
 func (ws *WorkerServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// 跟踪活跃请求
 	ws.activeReqs.Add(1)
@@ -243,6 +265,7 @@ func (ws *WorkerServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// runDownloadTask 根据 mode 分发下载策略。
 func (ws *WorkerServer) runDownloadTask(req WorkerDownloadRequest) ([]string, error) {
 	if req.Mode == "shortcode" {
 		return ws.downloadByShortcode(req.Shortcode)
@@ -250,7 +273,10 @@ func (ws *WorkerServer) runDownloadTask(req WorkerDownloadRequest) ([]string, er
 	return ws.downloadByIndex(req.Username, req.PostIndex)
 }
 
-// downloadByShortcode 通过 Shortcode 下载（使用缓存）
+// downloadByShortcode 通过 Shortcode 下载（强依赖缓存路径语义）。
+//
+// 命中顺序：
+// 1) 文件缓存（files_cache）：若文件仍存在，直接返回路径\n+// 2) 媒体缓存（media_cache）：若媒体 URL 已缓存，跳过 GraphQL\n+// 3) GraphQL 获取媒体 URL，并回填媒体缓存\n+// 4) 下载到 `downloads/cache/<shortcode>/...`，并写入文件缓存
 func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) {
 	log.Printf("  检查文件缓存...")
 	// 1. 检查文件缓存
@@ -309,7 +335,10 @@ func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) 
 	return files, nil
 }
 
-// downloadByIndex 通过位置下载（使用帖子列表缓存）
+// downloadByIndex 通过“主页时间线序号”下载。
+//
+// 关键点：
+// - 先尝试从 posts_cache 命中 shortcode（避免打开主页）\n+// - 若缓存不存在/过期/数量不足，则访问主页加载至少 postIndex 条并刷新缓存\n+// - 拿到 shortcode 后复用 downloadByShortcode（自动套用媒体/文件缓存）
 func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]string, error) {
 	log.Printf("  检查帖子列表缓存...")
 	var shortcode string
@@ -405,6 +434,7 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 	return files, nil
 }
 
+// RunWorker 启动 worker 并监听退出信号（SIGINT/SIGTERM），支持优雅关闭。
 func RunWorker() error {
 	server := NewWorkerServer()
 
@@ -432,12 +462,14 @@ func RunWorker() error {
 	}
 }
 
+// writeJSON 写入 JSON 响应。这里忽略编码错误以避免影响主流程（一般不会发生）。
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// buildWorkerBaseURL 由监听地址构建可访问的 base URL（默认 http://）。
 func buildWorkerBaseURL() string {
 	addr := getWorkerListenAddr()
 	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
@@ -446,10 +478,12 @@ func buildWorkerBaseURL() string {
 	return "http://" + addr
 }
 
+// workerControlSummary 返回 worker 控制面摘要文本（用于 status 输出）。
 func workerControlSummary() string {
 	return fmt.Sprintf("worker 地址: %s", buildWorkerBaseURL())
 }
 
+// parseWorkerPort 从监听地址中提取端口部分（用于守护/控制逻辑）。
 func parseWorkerPort() string {
 	parts := strings.Split(getWorkerListenAddr(), ":")
 	if len(parts) == 0 {
@@ -458,12 +492,13 @@ func parseWorkerPort() string {
 	return parts[len(parts)-1]
 }
 
+// workerPortInt 返回端口的 int 形式（转换失败返回 0）。
 func workerPortInt() int {
 	port, _ := strconv.Atoi(parseWorkerPort())
 	return port
 }
 
-// handleCheckUpdate 处理检查更新请求
+// handleCheckUpdate 处理检查更新请求。\n+// 用于 bot 侧“检查更新”按钮：判断主页最新帖子是否变化，必要时刷新 posts_cache。
 func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	ws.activeReqs.Add(1)
 	defer ws.activeReqs.Done()
@@ -523,7 +558,7 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// checkCacheUpdate 检查缓存是否需要更新
+// checkCacheUpdate 检查缓存是否需要更新。\n+// 通过“缓存第 1 条 shortcode vs 实际主页第 1 条 shortcode”进行对比，快速判断是否有新帖子。
 func (ws *WorkerServer) checkCacheUpdate(username string) (needRefresh bool, totalPosts int, err error) {
 	log.Printf("  检查 @%s 的缓存状态...", username)
 
@@ -594,4 +629,3 @@ func (ws *WorkerServer) checkCacheUpdate(username string) (needRefresh bool, tot
 	log.Printf("  ✓ 缓存已是最新")
 	return false, len(postLinks), nil
 }
-

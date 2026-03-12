@@ -22,6 +22,13 @@ type UserState struct {
 	Timestamp time.Time
 }
 
+// TelegramBot 是 Telegram 控制面：
+// - 负责命令/按钮交互、权限校验、轻量状态机管理；
+// - 通过 HTTP 调用本机 worker 执行下载；
+// - 将 worker 返回的本地文件上传回 Telegram。
+//
+// 回调按钮（CallbackQuery）有严格时效，处理时需优先快速 `answerCallback`，
+// 避免用户端出现“按钮无响应/超时”的体验问题。
 type TelegramBot struct {
 	bot              *tgbotapi.BotAPI
 	allowedUsers     map[int64]bool
@@ -32,6 +39,9 @@ type TelegramBot struct {
 	workerBaseURL    string
 }
 
+// NewTelegramBot 构建 bot 实例并初始化权限与默认配置。
+// - allowed_user_ids 为空则为开放模式（不做用户限制）
+// - admin_user_ids 为空时通常会回退为 allowed_user_ids（见 config.go 的兼容逻辑）
 func NewTelegramBot(config *Config) (*TelegramBot, error) {
 	bot, err := tgbotapi.NewBotAPI(config.TelegramBotToken)
 	if err != nil {
@@ -90,6 +100,11 @@ func (tb *TelegramBot) cleanupExpiredStates() {
 	}
 }
 
+// Start 启动 bot 的 update loop。
+//
+// 健壮性策略：
+// - 外层与每条 update 都有 panic 恢复，避免单条异常导致 bot 整体退出；
+// - callback 与 message 分开处理，callback 优先响应以避免 Telegram 超时。
 func (tb *TelegramBot) Start() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -141,6 +156,7 @@ func (tb *TelegramBot) Start() {
 	}
 }
 
+// isAllowedUser 判断 userID 是否有使用权限。\n+// allowedUsers 为空表示不限制。
 func (tb *TelegramBot) isAllowedUser(userID int64) bool {
 	if len(tb.allowedUsers) == 0 {
 		return true
@@ -148,6 +164,7 @@ func (tb *TelegramBot) isAllowedUser(userID int64) bool {
 	return tb.allowedUsers[userID]
 }
 
+// isAdminUser 判断 userID 是否有管理员权限。\n+// adminUsers 为空时回退为 allowedUsers 的规则（保持兼容）。
 func (tb *TelegramBot) isAdminUser(userID int64) bool {
 	if len(tb.adminUsers) == 0 {
 		return tb.isAllowedUser(userID)
@@ -155,6 +172,7 @@ func (tb *TelegramBot) isAdminUser(userID int64) bool {
 	return tb.adminUsers[userID]
 }
 
+// handleCommand 分发并处理命令消息（以 / 开头）。
 func (tb *TelegramBot) handleCommand(message *tgbotapi.Message) {
 	command := message.Command()
 	args := strings.Fields(message.CommandArguments())
@@ -264,6 +282,7 @@ func (tb *TelegramBot) handleDownload(message *tgbotapi.Message, args []string) 
 	}
 }
 
+// sendMessage 发送普通文本消息。\n+// 发送失败仅记录日志，不中断主流程。
 func (tb *TelegramBot) sendMessage(chatID int64, text string) tgbotapi.Message {
 	msg := tgbotapi.NewMessage(chatID, text)
 	sentMsg, err := tb.bot.Send(msg)
@@ -273,6 +292,7 @@ func (tb *TelegramBot) sendMessage(chatID int64, text string) tgbotapi.Message {
 	return sentMsg
 }
 
+// editMessage 编辑消息，用于更新进度/结果展示。
 func (tb *TelegramBot) editMessage(chatID int64, messageID int, text string) {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	if _, err := tb.bot.Send(edit); err != nil {
@@ -280,6 +300,7 @@ func (tb *TelegramBot) editMessage(chatID int64, messageID int, text string) {
 	}
 }
 
+// editMessageWithKeyboard 编辑消息并附带 inline keyboard。\n+// 常用于控制面板“原地刷新”。
 func (tb *TelegramBot) editMessageWithKeyboard(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ReplyMarkup = &keyboard
@@ -288,6 +309,7 @@ func (tb *TelegramBot) editMessageWithKeyboard(chatID int64, messageID int, text
 	}
 }
 
+// sendFile 上传文件到 Telegram。\n+// 这里按后缀区分 photo/video，以获得更符合 Telegram 客户端的展示效果。
 func (tb *TelegramBot) sendFile(chatID int64, filePath string) error {
 	if strings.HasSuffix(filePath, ".mp4") {
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
@@ -299,6 +321,7 @@ func (tb *TelegramBot) sendFile(chatID int64, filePath string) error {
 	return err
 }
 
+// handleCallback 处理 inline button 回调。\n+// 注意：具体分支中通常会先 answerCallback，再异步执行耗时操作。
 func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 	data := callback.Data
 
@@ -342,6 +365,7 @@ func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 	}
 }
 
+// handleWorkerControl 处理 worker 启停/状态按钮。\n+// 该函数会先立即响应 callback，避免 Telegram “query is too old”。
 func (tb *TelegramBot) handleWorkerControl(callback *tgbotapi.CallbackQuery) {
 	if !tb.isAdminUser(callback.From.ID) {
 		tb.answerCallback(callback.ID, "❌ 仅管理员可操作")
@@ -713,6 +737,7 @@ func (tb *TelegramBot) handleMessage(message *tgbotapi.Message) {
 func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex int) {
 	statusMsg := tb.sendMessage(chatID, fmt.Sprintf("⏳ 正在下载 @%s 的第 %d 个帖子...", username, postIndex))
 
+	// 先检查 worker 是否运行，避免用户等待后才失败。
 	runtime, err := GetServiceRuntime("worker")
 	if err != nil {
 		tb.editMessage(chatID, statusMsg.MessageID, fmt.Sprintf("❌ 无法获取 worker 状态: %v", err))
@@ -801,6 +826,7 @@ func (tb *TelegramBot) executeDownloadByShortcode(chatID int64, shortcode string
 	tb.sendMessage(chatID, fmt.Sprintf("✅ 全部完成！共上传 %d 个文件", len(files)))
 }
 
+// requestWorkerDownload 调用 worker 的 `/download`（按序号模式）。\n+// worker 返回本机文件路径列表，bot 负责后续上传这些文件。
 func (tb *TelegramBot) requestWorkerDownload(username string, postIndex int) ([]string, error) {
 	payload := WorkerDownloadRequest{Username: username, PostIndex: postIndex, Mode: "index"}
 	body, err := json.Marshal(payload)

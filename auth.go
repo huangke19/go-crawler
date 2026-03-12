@@ -206,7 +206,7 @@ func CreateFastBrowserContext() (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true), // 无头模式
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("disable-images", true),           // 禁用图片
+		chromedp.Flag("disable-images", true),                  // 禁用图片
 		chromedp.Flag("blink-settings", "imagesEnabled=false"), // 禁用图片加载
 		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
