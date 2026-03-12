@@ -1,19 +1,60 @@
+// ============================================================================
+// bot.go - Telegram Bot 实现
+// ============================================================================
+//
+// 职责：
+//   - 实现 Telegram Bot 的消息处理与交互
+//   - 权限校验（白名单模式）
+//   - 用户状态管理（状态机）
+//   - 通过 HTTP 调用 Worker 执行下载
+//   - 将下载结果上传回 Telegram
+//
+// 核心概念：
+//   - Bot 是”控制面”：负责交互、权限检查、文件上传
+//   - Worker 是”执行面”：负责耗时的抓取与下载
+//   - 分离设计：避免 Bot 因长耗时操作而无法响应用户
+//
+// 用户交互流程：
+//   1. 用户发送 /download 命令
+//   2. Bot 显示常用账户按钮
+//   3. 用户选择账户
+//   4. Bot 显示帖子序号按钮（1-10）
+//   5. 用户选择序号
+//   6. Bot 调用 Worker HTTP 接口执行下载
+//   7. 下载完成后，Bot 上传文件到 Telegram
+//
+// 关键函数：
+//   - NewTelegramBot()：创建 Bot 实例
+//   - Start()：启动 Bot，监听消息
+//   - handleCommand()：处理命令（/start, /help, /download, /status）
+//   - handleCallback()：处理按钮点击
+//   - downloadPost()：执行下载任务
+//   - sendFile()：上传文件到 Telegram
+//   - cleanupExpiredStates()：定期清理过期的用户状态
+//
+// 状态机说明：
+//   - waiting_account：等待用户选择账户
+//   - waiting_index：等待用户选择帖子序号
+//   - 状态过期时间：5 分钟
+//
+// ============================================================================
+
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"sort"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
+	“bytes”
+	“encoding/json”
+	“fmt”
+	“io”
+	“log”
+	“net/http”
+	“sort”
+	“strconv”
+	“strings”
+	“sync”
+	“time”
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi “github.com/go-telegram-bot-api/telegram-bot-api/v5”
 )
 
 type UserState struct {
@@ -28,7 +69,7 @@ type UserState struct {
 // - 将 worker 返回的本地文件上传回 Telegram。
 //
 // 回调按钮（CallbackQuery）有严格时效，处理时需优先快速 `answerCallback`，
-// 避免用户端出现“按钮无响应/超时”的体验问题。
+// 避免用户端出现”按钮无响应/超时”的体验问题。
 type TelegramBot struct {
 	bot              *tgbotapi.BotAPI
 	allowedUsers     map[int64]bool

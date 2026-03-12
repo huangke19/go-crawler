@@ -1,3 +1,37 @@
+// ============================================================================
+// daemon.go - 守护进程管理（Bot 和 Worker）
+// ============================================================================
+//
+// 职责：
+//   - 启动/停止/重启后台服务（Bot 和 Worker）
+//   - PID 文件管理
+//   - 日志文件管理
+//   - 进程状态检查
+//   - 优雅关闭（SIGTERM → SIGKILL）
+//
+// 核心概念：
+//   - 守护进程：脱离终端运行的后台进程（使用 syscall.Setsid）
+//   - PID 文件：记录进程 ID，用于后续管理
+//   - 日志重定向：stdout/stderr 重定向到日志文件
+//   - caffeinate：macOS 防休眠工具（仅在 macOS 上使用）
+//
+// 支持的服务：
+//   - bot：Telegram Bot 服务
+//   - worker：下载执行服务
+//
+// 关键函数：
+//   - StartServiceDaemon()：启动后台服务
+//   - StopServiceDaemon()：停止后台服务
+//   - RestartServiceDaemon()：重启后台服务
+//   - GetServiceRuntime()：获取服务运行状态
+//   - PrintServiceStatus()：打印服务状态
+//   - IsServiceRunning()：检查服务是否运行
+//   - IsProcessRunning()：检查进程是否存在
+//   - ReadServicePID() / WriteServicePID()：PID 文件操作
+//   - ShowLastLogs()：显示最近的日志
+//
+// ============================================================================
+
 package main
 
 import (

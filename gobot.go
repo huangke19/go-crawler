@@ -1,6 +1,40 @@
 //go:build gobot
 // +build gobot
 
+// ============================================================================
+// gobot.go - 守护进程 CLI 工具
+// ============================================================================
+//
+// 职责：
+//   - 提供命令行接口管理 Bot 和 Worker 后台服务
+//   - 支持启动/停止/重启/查看状态/查看日志
+//   - 支持 launchd 集成（macOS 开机自启）
+//
+// 命令格式：
+//   gobot [service] <command>
+//
+// 服务类型：
+//   - bot：Telegram Bot 服务（默认）
+//   - worker：下载执行服务
+//
+// 命令：
+//   - start：启动服务
+//   - stop：停止服务
+//   - restart：重启服务
+//   - status：查看服务状态
+//   - logs：查看服务日志
+//   - launchd：macOS 开机自启管理
+//
+// 使用示例：
+//   gobot start                # 启动 bot
+//   gobot bot start            # 启动 bot（显式指定）
+//   gobot worker start         # 启动 worker
+//   gobot worker status        # 查看 worker 状态
+//   gobot worker logs          # 查看 worker 日志
+//   gobot launchd install      # 安装 bot 开机自启
+//
+// ============================================================================
+
 package main
 
 import (

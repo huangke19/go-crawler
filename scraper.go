@@ -1,22 +1,55 @@
+// ============================================================================
+// scraper.go - 页面爬取与媒体 URL 提取
+// ============================================================================
+//
+// 职责：
+//   - 访问 Instagram 用户主页
+//   - 滚动加载更多帖子（每次加载约 12 条）
+//   - 按时间线序号定位帖子（第 1 条 = 最新）
+//   - 通过 GraphQL API 提取媒体 URL（图片/视频/轮播）
+//
+// 核心概念：
+//   - 帖子定位：通过 DOM 解析获取帖子链接（/p/ 或 /reel/）
+//   - 媒体提取：通过 GraphQL API 获取原始媒体 URL（不依赖页面 HTML 渲染）
+//   - 三种媒体类型：单图 / 单视频 / 轮播（多图/视频混合）
+//
+// 关键函数：
+//   - NavigateToUser()：访问用户主页
+//   - ScrollToLoadMore()：滚动加载更多帖子
+//   - GetPostByIndex()：获取第 N 个帖子的链接
+//   - GetAllPostLinks()：获取用户主页的所有帖子链接
+//   - ExtractMediaURLs()：通过 GraphQL 提取媒体 URL
+//   - extractShortcode()：从 URL 提取 shortcode
+//   - extractMediaFromJSON()：从 GraphQL 响应解析媒体信息
+//   - extractImageURL()：从媒体数据提取图片 URL
+//
+// GraphQL API 说明：
+//   - 端点：https://www.instagram.com/graphql/query
+//   - doc_id：8845758582119845（可能随 Instagram 更新而变化）
+//   - 必需请求头：X-CSRFToken（从 Cookie 中提取）
+//   - 响应字段：data.xdt_shortcode_media（新版）或 data.shortcode_media（旧版）
+//
+// ============================================================================
+
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"strings"
-	"time"
+	“context”
+	“encoding/json”
+	“fmt”
+	“io”
+	“net/http”
+	“strings”
+	“time”
 
-	"github.com/PuerkitoBio/goquery"
-	"github.com/chromedp/chromedp"
+	“github.com/PuerkitoBio/goquery”
+	“github.com/chromedp/chromedp”
 )
 
 // NavigateToUser 访问用户主页。
 //
 // 说明：
-// - 主页访问用于“按时间线序号”定位帖子链接（第 1 条=最新）。
+// - 主页访问用于”按时间线序号”定位帖子链接（第 1 条=最新）。
 // - 实际媒体 URL（图片/视频）不从主页 HTML 抓取，而是后续通过 GraphQL 接口获取。
 func NavigateToUser(ctx context.Context, username string) error {
 	url := fmt.Sprintf("https://www.instagram.com/%s/", username)

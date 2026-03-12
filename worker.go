@@ -1,29 +1,83 @@
+// ============================================================================
+// worker.go - Worker HTTP 服务（执行面）
+// ============================================================================
+//
+// 职责：
+//   - 启动 HTTP 服务，接收 Bot 的下载请求
+//   - 复用浏览器实例，避免每个请求都启动 Chrome
+//   - 优先使用三层缓存（文件 / 媒体 / 帖子）
+//   - 执行实时抓取与下载
+//   - 优雅关闭：等待活跃请求完成
+//
+// 核心概念：
+//   - Worker 是”执行面”：负责耗时的抓取与下载
+//   - Bot 是”控制面”：负责交互与文件上传
+//   - 分离设计：避免 Bot 因长耗时操作而无法响应用户
+//
+// HTTP 接口：
+//   - GET /health：健康检查
+//   - POST /download：执行下载任务
+//   - POST /check-update：检查主页是否有更新并刷新帖子列表缓存
+//
+// 下载请求格式：
+//   {
+//     “mode”: “index” 或 “shortcode”,
+//     “username”: “用户名（mode=index 时必需）”,
+//     “post_index”: 帖子序号（mode=index 时必需）,
+//     “shortcode”: “shortcode（mode=shortcode 时必需）”
+//   }
+//
+// 下载响应格式：
+//   {
+//     “success”: true/false,
+//     “message”: “错误信息或成功提示”,
+//     “file_paths”: [“文件路径1”, “文件路径2”, ...]
+//   }
+//
+// 缓存命中顺序：
+//   1. 文件缓存：如果文件仍存在，直接返回路径（<1秒）
+//   2. 媒体缓存：如果 shortcode 的媒体 URL 已缓存，跳过 GraphQL 调用
+//   3. 帖子缓存：如果用户主页帖子列表未过期，跳过滚动加载
+//   4. 实时抓取：以上都未命中，则实时访问主页、调用 GraphQL、下载文件
+//
+// 关键函数：
+//   - NewWorkerServer()：创建 Worker 服务
+//   - RunWorker()：启动 Worker 服务
+//   - handleHealth()：健康检查
+//   - handleDownload()：处理下载请求
+//   - handleCheckUpdate()：检查主页更新
+//   - getWorkerListenAddr()：获取监听地址
+//
+// ============================================================================
+
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"strconv"
-	"strings"
-	"sync"
-	"syscall"
-	"time"
+	“bytes”
+	“context”
+	“encoding/json”
+	“fmt”
+	“log”
+	“net/http”
+	“os”
+	“os/signal”
+	“strconv”
+	“strings”
+	“sync”
+	“syscall”
+	“time”
 )
 
 const (
-	defaultWorkerListenAddr = "127.0.0.1:18080"
+	defaultWorkerListenAddr = “127.0.0.1:18080”
 )
 
 // WorkerServer 是下载执行面 HTTP 服务。
 //
 // 设计要点：
-// - Worker 负责“耗时且可能阻塞”的抓取与下载逻辑；Bot 只做交互与文件上传。\n+// - Worker 复用一个无头浏览器实例（避免每个请求都启动 Chrome）；\n+// - 通过 activeReqs 跟踪活跃请求，实现优雅关闭（尽量不半途打断下载）。
+// - Worker 负责”耗时且可能阻塞”的抓取与下载逻辑；Bot 只做交互与文件上传。
+// - Worker 复用一个无头浏览器实例（避免每个请求都启动 Chrome）；
+// - 通过 activeReqs 跟踪活跃请求，实现优雅关闭（尽量不半途打断下载）。
 type WorkerServer struct {
 	server        *http.Server
 	config        *Config
@@ -34,34 +88,37 @@ type WorkerServer struct {
 }
 
 // WorkerDownloadRequest 是 Bot/CLI 调用 Worker 的下载请求体。
-// - mode=index：按用户主页时间线序号下载（需要 username + post_index）\n+// - mode=shortcode：按 shortcode 下载（只需要 shortcode）
+// - mode=index：按用户主页时间线序号下载（需要 username + post_index）
+// - mode=shortcode：按 shortcode 下载（只需要 shortcode）
 type WorkerDownloadRequest struct {
-	Username  string `json:"username,omitempty"`
-	PostIndex int    `json:"post_index,omitempty"`
-	Shortcode string `json:"shortcode,omitempty"`
-	Mode      string `json:"mode"` // "index" 或 "shortcode"
+	Username  string `json:”username,omitempty”`
+	PostIndex int    `json:”post_index,omitempty”`
+	Shortcode string `json:”shortcode,omitempty”`
+	Mode      string `json:”mode”` // “index” 或 “shortcode”
 }
 
-// WorkerDownloadResponse 是下载结果响应体。\n+// 成功时返回 file_paths（本机文件绝对/相对路径，供 bot 上传）。
+// WorkerDownloadResponse 是下载结果响应体。
+// 成功时返回 file_paths（本机文件绝对/相对路径，供 bot 上传）。
 type WorkerDownloadResponse struct {
-	Success   bool     `json:"success"`
-	Message   string   `json:"message,omitempty"`
-	FilePaths []string `json:"file_paths,omitempty"`
+	Success   bool     `json:”success”`
+	Message   string   `json:”message,omitempty”`
+	FilePaths []string `json:”file_paths,omitempty”`
 }
 
-// getWorkerListenAddr 获取 worker 监听地址。\n+// 优先级：环境变量 `CRAWLER_WORKER_ADDR` > config.json 的 worker_addr > 默认值。
+// getWorkerListenAddr 获取 worker 监听地址。
+// 优先级：环境变量 `CRAWLER_WORKER_ADDR` > config.json 的 worker_addr > 默认值。
 func getWorkerListenAddr() string {
-	if value := strings.TrimSpace(os.Getenv("CRAWLER_WORKER_ADDR")); value != "" {
+	if value := strings.TrimSpace(os.Getenv(“CRAWLER_WORKER_ADDR”)); value != “” {
 		return value
 	}
 
 	type workerConfig struct {
-		WorkerAddr string `json:"worker_addr"`
+		WorkerAddr string `json:”worker_addr”`
 	}
-	if data, err := os.ReadFile("config.json"); err == nil {
+	if data, err := os.ReadFile(“config.json”); err == nil {
 		var cfg workerConfig
 		if json.Unmarshal(data, &cfg) == nil {
-			if value := strings.TrimSpace(cfg.WorkerAddr); value != "" {
+			if value := strings.TrimSpace(cfg.WorkerAddr); value != “” {
 				return value
 			}
 		}

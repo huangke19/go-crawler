@@ -36,6 +36,24 @@
 
 ## 项目结构
 
+### 文件功能速查表
+
+| 文件 | 职责 | 关键函数 | 行数 |
+|------|------|---------|------|
+| **main.go** | CLI 参数解析与子命令分发 | `main()`, `handleLogin()`, `handleDownload()`, `handleBot()`, `handleWorker()` | ~220 |
+| **auth.go** | 认证管理与会话持久化 | `LoadSession()`, `SaveSession()`, `SetCookies()`, `EnsureLoggedIn()`, `CreateBrowserContext()`, `CreateFastBrowserContext()` | ~230 |
+| **login.go** | 手动登录流程 | `ManualLogin()` | ~70 |
+| **scraper.go** | 页面爬取与媒体 URL 提取 | `NavigateToUser()`, `ScrollToLoadMore()`, `GetPostByIndex()`, `ExtractMediaURLs()`, `extractMediaFromJSON()` | ~480 |
+| **downloader.go** | 文件下载与并发控制 | `CreateUserDirectory()`, `DownloadMedia()`, `DownloadPost()`, `downloadConcurrently()` | ~270 |
+| **cache.go** | 三层缓存系统 | `LoadMediaCache()`, `LoadPostsCache()`, `LoadFilesCache()`, `GetDownloadHistory()` | ~370 |
+| **config.go** | 配置管理 | `LoadConfig()`, `GetWorkerAddr()`, `GetWorkerBaseURL()` | ~66 |
+| **bot.go** | Telegram Bot 实现 | `NewTelegramBot()`, `Start()`, `handleCommand()`, `handleCallback()`, `downloadPost()` | ~500+ |
+| **worker.go** | Worker HTTP 服务 | `NewWorkerServer()`, `RunWorker()`, `handleDownload()`, `handleCheckUpdate()` | ~400+ |
+| **daemon.go** | 守护进程管理 | `StartServiceDaemon()`, `StopServiceDaemon()`, `RestartServiceDaemon()`, `GetServiceRuntime()` | ~377 |
+| **gobot.go** | 守护进程 CLI 工具 | `main()`, `printGobotUsage()`, `showLogs()` | ~118 |
+
+### 目录结构
+
 ```
 go-crawler/
 ├── main.go              # 主入口，CLI 参数解析和流程编排
@@ -275,17 +293,125 @@ go-crawler/
 
 ## 常见开发任务
 
-### 添加新功能
-- **修改 CLI 参数**: 编辑 `main.go` 的参数解析逻辑
-- **修改爬取逻辑**: 编辑 `scraper.go`
-- **修改下载逻辑**: 编辑 `downloader.go`
-- **修改认证逻辑**: 编辑 `auth.go`
+### 快速定位代码
+
+| 需求 | 文件 | 关键函数 | 说明 |
+|------|------|---------|------|
+| 添加 CLI 命令 | `main.go` | `main()` | 在 switch 语句中添加新 case |
+| 修改登录流程 | `auth.go` / `login.go` | `ManualLogin()`, `EnsureLoggedIn()` | 登录相关逻辑 |
+| 修改爬取逻辑 | `scraper.go` | `NavigateToUser()`, `ExtractMediaURLs()` | 页面访问、媒体提取 |
+| 修改下载逻辑 | `downloader.go` | `DownloadMedia()`, `downloadConcurrently()` | 文件下载、并发控制 |
+| 修改缓存策略 | `cache.go` | `LoadMediaCache()`, `GetDownloadHistory()` | 三层缓存管理 |
+| 添加 Bot 命令 | `bot.go` | `handleCommand()` | Telegram 命令处理 |
+| 添加 Worker 接口 | `worker.go` | `NewWorkerServer()` | HTTP 路由注册 |
+| 修改配置项 | `config.go` | `Config` 结构体 | 配置字段定义 |
+| 修改守护进程 | `daemon.go` | `StartServiceDaemon()` | 后台进程管理 |
+
+### 常见修改位置
+
+#### 添加新的 CLI 命令
+**位置**: `main.go` 的 `main()` 函数（第 31-50 行）
+```go
+switch command {
+case "login":
+    handleLogin()
+case "download", "dl":
+    handleDownload()
+// 在这里添加新命令
+case "mynewcmd":
+    handleMyNewCmd()
+}
+```
+
+#### 修改爬取逻辑
+**位置**: `scraper.go`
+- `NavigateToUser()` - 访问主页的逻辑
+- `ScrollToLoadMore()` - 滚动加载的逻辑（修改滚动次数、等待时间）
+- `ExtractMediaURLs()` - GraphQL 调用和媒体提取（修改 doc_id、请求头）
+- `extractMediaFromJSON()` - 媒体类型判断和 URL 提取
+
+#### 修改下载逻辑
+**位置**: `downloader.go`
+- `DownloadMedia()` - 单个文件下载（修改重试次数、超时时间）
+- `downloadConcurrently()` - 并发控制（修改 maxConcurrent 参数，当前为 10）
+- `downloadPostInternal()` - 文件命名规则（修改文件名格式）
+
+#### 修改 Bot 命令
+**位置**: `bot.go` 的 `handleCommand()` 函数
+```go
+switch update.Message.Command() {
+case "start":
+    // 处理 /start 命令
+case "download":
+    // 处理 /download 命令
+// 在这里添加新命令
+case "mynewcmd":
+    // 处理 /mynewcmd 命令
+}
+```
+
+#### 修改 Worker 接口
+**位置**: `worker.go` 的 `NewWorkerServer()` 函数
+```go
+mux.HandleFunc("/health", ws.handleHealth)
+mux.HandleFunc("/download", ws.handleDownload)
+// 在这里添加新接口
+mux.HandleFunc("/mynewapi", ws.handleMyNewAPI)
+```
+
+#### 修改缓存策略
+**位置**: `cache.go`
+- `LoadMediaCache()` - 媒体缓存加载（修改缓存过期时间）
+- `LoadPostsCache()` - 帖子缓存加载（修改缓存过期时间）
+- `GetDownloadHistory()` - 下载历史查询（修改排序方式、内存缓存时间）
+
+#### 修改配置项
+**位置**: `config.go` 的 `Config` 结构体（第 10-16 行）
+```go
+type Config struct {
+    TelegramBotToken string   `json:"telegram_bot_token"`
+    AllowedUserIDs   []int64  `json:"allowed_user_ids"`
+    // 在这里添加新配置项
+    MyNewConfig      string   `json:"my_new_config"`
+}
+```
+
+### 快速定位技巧
+
+#### 按功能查找
+- **登录相关**: `auth.go`, `login.go`
+- **爬取相关**: `scraper.go`
+- **下载相关**: `downloader.go`
+- **缓存相关**: `cache.go`
+- **Bot 相关**: `bot.go`
+- **Worker 相关**: `worker.go`
+- **配置相关**: `config.go`
+- **守护进程**: `daemon.go`, `gobot.go`
+
+#### 按关键词查找
+- "GraphQL" → `scraper.go` 的 `ExtractMediaURLs()`
+- "并发" → `downloader.go` 的 `downloadConcurrently()`
+- "缓存" → `cache.go` 的各个 Load/Save 函数
+- "Telegram" → `bot.go` 的各个处理函数
+- "HTTP" → `worker.go` 的各个处理函数
+- "守护进程" → `daemon.go` 的 StartServiceDaemon/StopServiceDaemon
+- "浏览器" → `auth.go` 的 CreateBrowserContext/CreateFastBrowserContext
+
+#### 按错误类型查找
+- **登录失败** → `auth.go` 的 `EnsureLoggedIn()`, `login.go` 的 `ManualLogin()`
+- **爬取失败** → `scraper.go` 的 `NavigateToUser()`, `GetPostByIndex()`, `ExtractMediaURLs()`
+- **下载失败** → `downloader.go` 的 `DownloadMedia()`, `downloadConcurrently()`
+- **缓存问题** → `cache.go` 的各个 Load/Save 函数
+- **Bot 无响应** → `bot.go` 的 `Start()`, `handleCommand()`, `handleCallback()`
+- **Worker 崩溃** → `worker.go` 的 `RunWorker()`, `handleDownload()`
 
 ### 调试技巧
 - 在 `CreateFastBrowserContext()` 中设置 `headless: false` 查看浏览器行为
 - 在关键步骤添加 `fmt.Printf()` 打印调试信息
 - 检查 `.instagram_session.json` 文件确认 Cookie 是否有效
 - 使用 `chromedp.Sleep()` 增加等待时间
+- 查看 `gobot.log` 文件查看后台服务日志
+- 使用 `gobot status` 检查服务运行状态
 
 ### 编译和分发
 ```bash
