@@ -14,7 +14,7 @@
 //      - 缓存 Instagram GraphQL API 响应
 //      - key: shortcode
 //      - value: 媒体类型 + URL 列表
-//      - 过期时间：24 小时（可手动清理）
+//      - 过期时间：永久（仅在帖子被删除或手动清理时失效）
 //      - 用途：避免重复调用 GraphQL API
 //
 //   2. 帖子缓存 (posts_cache.json)

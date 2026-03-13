@@ -74,7 +74,7 @@ go-crawler/
 ├── .gobot.pid           # 守护进程 PID 文件（不提交到 Git）
 ├── gobot.log            # 守护进程日志文件（不提交到 Git）
 ├── cache/               # 缓存目录
-│   ├── media_cache.json     # 媒体 URL 缓存（24小时）
+│   ├── media_cache.json     # 媒体 URL 缓存（永久）
 │   ├── posts_cache.json     # 帖子列表缓存（1小时）
 │   └── files_cache.json     # 文件路径缓存（永久）
 ├── downloads/           # 下载目录（按用户名组织）
@@ -652,7 +652,7 @@ tail -f gobot.log
 
 1. **媒体缓存** (`cache/media_cache.json`)
    - 缓存 Instagram GraphQL API 响应
-   - 过期时间: 24 小时
+   - 过期时间: 永久
    - 键: shortcode
    - 值: MediaInfo (URLs, Types)
 
