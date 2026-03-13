@@ -211,7 +211,7 @@ func handleBot() {
 		os.Exit(1)
 	}
 
-	bot, err := NewTelegramBot(config)
+	client, err := NewTelegramClient(config)
 	if err != nil {
 		fmt.Printf("❌ 启动 Bot 失败: %v\n", err)
 		os.Exit(1)
@@ -225,7 +225,7 @@ func handleBot() {
 	}
 	fmt.Println()
 
-	bot.Start()
+	client.Start()
 }
 
 // handleWorker 启动 Worker HTTP 服务（执行面）。

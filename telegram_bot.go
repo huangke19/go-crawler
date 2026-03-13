@@ -24,7 +24,7 @@
 //   7. 下载完成后，Bot 上传文件到 Telegram
 //
 // 关键函数：
-//   - NewTelegramBot()：创建 Bot 实例
+//   - NewTelegramClient()：创建 Bot 实例
 //   - Start()：启动 Bot，监听消息
 //   - handleCommand()：处理命令（/start, /help, /download, /status）
 //   - handleCallback()：处理按钮点击
@@ -64,14 +64,14 @@ type UserState struct {
 	Timestamp time.Time
 }
 
-// TelegramBot 是 Telegram 控制面：
+// TelegramClient 是 Telegram 控制面：
 // - 负责命令/按钮交互、权限校验、轻量状态机管理；
 // - 通过 HTTP 调用本机 worker 执行下载；
 // - 将 worker 返回的本地文件上传回 Telegram。
 //
 // 回调按钮（CallbackQuery）有严格时效，处理时需优先快速 `answerCallback`，
 // 避免用户端出现"按钮无响应/超时"的体验问题。
-type TelegramBot struct {
+type TelegramClient struct {
 	bot              *tgbotapi.BotAPI
 	allowedUsers     map[int64]bool
 	adminUsers       map[int64]bool
@@ -83,10 +83,10 @@ type TelegramBot struct {
 	configPath       string
 }
 
-// NewTelegramBot 构建 bot 实例并初始化权限与默认配置。
+// NewTelegramClient 构建 bot 实例并初始化权限与默认配置。
 // - allowed_user_ids 为空则为开放模式（不做用户限制）
 // - admin_user_ids 为空时通常会回退为 allowed_user_ids（见 config.go 的兼容逻辑）
-func NewTelegramBot(config *Config) (*TelegramBot, error) {
+func NewTelegramClient(config *Config) (*TelegramClient, error) {
 	bot, err := tgbotapi.NewBotAPI(config.TelegramBotToken)
 	if err != nil {
 		return nil, fmt.Errorf("创建 bot 失败: %w", err)
@@ -111,7 +111,7 @@ func NewTelegramBot(config *Config) (*TelegramBot, error) {
 	log.Printf("Telegram Bot 已启动: @%s", bot.Self.UserName)
 	log.Printf("Worker 地址: %s", workerBaseURL)
 
-	tb := &TelegramBot{
+	tb := &TelegramClient{
 		bot:              bot,
 		allowedUsers:     allowedUsers,
 		adminUsers:       adminUsers,
@@ -128,7 +128,7 @@ func NewTelegramBot(config *Config) (*TelegramBot, error) {
 }
 
 // cleanupExpiredStates 定期清理过期的用户状态
-func (tb *TelegramBot) cleanupExpiredStates() {
+func (tb *TelegramClient) cleanupExpiredStates() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -150,7 +150,7 @@ func (tb *TelegramBot) cleanupExpiredStates() {
 // 健壮性策略：
 // - 外层与每条 update 都有 panic 恢复，避免单条异常导致 bot 整体退出；
 // - callback 与 message 分开处理，callback 优先响应以避免 Telegram 超时。
-func (tb *TelegramBot) Start() {
+func (tb *TelegramClient) Start() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
@@ -202,7 +202,7 @@ func (tb *TelegramBot) Start() {
 }
 
 // isAllowedUser 判断 userID 是否有使用权限。\n+// allowedUsers 为空表示不限制。
-func (tb *TelegramBot) isAllowedUser(userID int64) bool {
+func (tb *TelegramClient) isAllowedUser(userID int64) bool {
 	if len(tb.allowedUsers) == 0 {
 		return true
 	}
@@ -210,7 +210,7 @@ func (tb *TelegramBot) isAllowedUser(userID int64) bool {
 }
 
 // isAdminUser 判断 userID 是否有管理员权限。\n+// adminUsers 为空时回退为 allowedUsers 的规则（保持兼容）。
-func (tb *TelegramBot) isAdminUser(userID int64) bool {
+func (tb *TelegramClient) isAdminUser(userID int64) bool {
 	if len(tb.adminUsers) == 0 {
 		return tb.isAllowedUser(userID)
 	}
@@ -218,7 +218,7 @@ func (tb *TelegramBot) isAdminUser(userID int64) bool {
 }
 
 // handleCommand 分发并处理命令消息（以 / 开头）。
-func (tb *TelegramBot) handleCommand(message *tgbotapi.Message) {
+func (tb *TelegramClient) handleCommand(message *tgbotapi.Message) {
 	command := message.Command()
 	args := strings.Fields(message.CommandArguments())
 
@@ -242,14 +242,14 @@ func (tb *TelegramBot) handleCommand(message *tgbotapi.Message) {
 	}
 }
 
-func (tb *TelegramBot) handleStart(message *tgbotapi.Message) {
+func (tb *TelegramClient) handleStart(message *tgbotapi.Message) {
 	text := fmt.Sprintf("👋 你好 @%s！\n\n", message.From.UserName)
 	text += "我是 Instagram 下载机器人，可以帮你下载 Instagram 帖子。\n\n"
 	text += "使用 /help 查看可用命令"
 	tb.sendMessage(message.Chat.ID, text)
 }
 
-func (tb *TelegramBot) handleHelp(message *tgbotapi.Message) {
+func (tb *TelegramClient) handleHelp(message *tgbotapi.Message) {
 	text := "📖 可用命令:\n\n"
 	text += "/download - 下载指定帖子（按钮交互）\n"
 	text += "/dl - download 的简写\n"
@@ -267,7 +267,7 @@ func (tb *TelegramBot) handleHelp(message *tgbotapi.Message) {
 	tb.sendMessage(message.Chat.ID, text)
 }
 
-func (tb *TelegramBot) handleStatus(message *tgbotapi.Message) {
+func (tb *TelegramClient) handleStatus(message *tgbotapi.Message) {
 	text := "✅ Bot 运行正常\n\n"
 	text += fmt.Sprintf("Bot 用户名: @%s\n", tb.bot.Self.UserName)
 	text += fmt.Sprintf("你的用户 ID: %d\n", message.From.ID)
@@ -286,7 +286,7 @@ func (tb *TelegramBot) handleStatus(message *tgbotapi.Message) {
 	tb.sendMessage(message.Chat.ID, text)
 }
 
-func (tb *TelegramBot) handleControl(message *tgbotapi.Message) {
+func (tb *TelegramClient) handleControl(message *tgbotapi.Message) {
 	if !tb.isAdminUser(message.From.ID) {
 		tb.sendMessage(message.Chat.ID, "❌ 仅管理员可使用 /control")
 		return
@@ -300,7 +300,7 @@ func (tb *TelegramBot) handleControl(message *tgbotapi.Message) {
 	}
 }
 
-func (tb *TelegramBot) handleDownload(message *tgbotapi.Message, args []string) {
+func (tb *TelegramClient) handleDownload(message *tgbotapi.Message, args []string) {
 	if len(args) > 0 {
 		tb.sendMessage(message.Chat.ID, "💡 提示: 请使用按钮选择账户和帖子序号\n直接使用 /download 命令即可")
 		return
@@ -336,7 +336,7 @@ func (tb *TelegramBot) handleDownload(message *tgbotapi.Message, args []string) 
 }
 
 // sendMessage 发送普通文本消息。\n+// 发送失败仅记录日志，不中断主流程。
-func (tb *TelegramBot) sendMessage(chatID int64, text string) tgbotapi.Message {
+func (tb *TelegramClient) sendMessage(chatID int64, text string) tgbotapi.Message {
 	msg := tgbotapi.NewMessage(chatID, text)
 	sentMsg, err := tb.bot.Send(msg)
 	if err != nil {
@@ -346,7 +346,7 @@ func (tb *TelegramBot) sendMessage(chatID int64, text string) tgbotapi.Message {
 }
 
 // editMessage 编辑消息，用于更新进度/结果展示。
-func (tb *TelegramBot) editMessage(chatID int64, messageID int, text string) {
+func (tb *TelegramClient) editMessage(chatID int64, messageID int, text string) {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	if _, err := tb.bot.Send(edit); err != nil {
 		log.Printf("编辑消息失败: %v", err)
@@ -354,7 +354,7 @@ func (tb *TelegramBot) editMessage(chatID int64, messageID int, text string) {
 }
 
 // editMessageWithKeyboard 编辑消息并附带 inline keyboard。\n+// 常用于控制面板"原地刷新"。
-func (tb *TelegramBot) editMessageWithKeyboard(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
+func (tb *TelegramClient) editMessageWithKeyboard(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ReplyMarkup = &keyboard
 	if _, err := tb.bot.Send(edit); err != nil {
@@ -385,7 +385,7 @@ func getVideoResolution(filePath string) (int, int) {
 // sendFile 上传文件到 Telegram。
 // 对于视频，会尝试获取宽高信息以保持原有的长宽比显示。
 // 如果 ffprobe 不可用，会降级到不设置宽高（Telegram 会使用默认显示）。
-func (tb *TelegramBot) sendFile(chatID int64, filePath string) error {
+func (tb *TelegramClient) sendFile(chatID int64, filePath string) error {
 	if strings.HasSuffix(filePath, ".mp4") {
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 
@@ -401,7 +401,7 @@ func (tb *TelegramBot) sendFile(chatID int64, filePath string) error {
 }
 
 // handleCallback 处理 inline button 回调。\n+// 注意：具体分支中通常会先 answerCallback，再异步执行耗时操作。
-func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
+func (tb *TelegramClient) handleCallback(callback *tgbotapi.CallbackQuery) {
 	data := callback.Data
 
 	switch {
@@ -447,7 +447,7 @@ func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 }
 
 // handleWorkerControl 处理 worker 启停/状态按钮。\n+// 该函数会先立即响应 callback，避免 Telegram "query is too old"。
-func (tb *TelegramBot) handleWorkerControl(callback *tgbotapi.CallbackQuery) {
+func (tb *TelegramClient) handleWorkerControl(callback *tgbotapi.CallbackQuery) {
 	if !tb.isAdminUser(callback.From.ID) {
 		tb.answerCallback(callback.ID, "❌ 仅管理员可操作")
 		return
@@ -488,7 +488,7 @@ func (tb *TelegramBot) handleWorkerControl(callback *tgbotapi.CallbackQuery) {
 	log.Printf("控制操作: user=%d action=%s result=%s", callback.From.ID, action, strings.ReplaceAll(result, "\n", " | "))
 }
 
-func (tb *TelegramBot) workerStatusSummary() (string, error) {
+func (tb *TelegramClient) workerStatusSummary() (string, error) {
 	runtime, err := GetServiceRuntime("worker")
 	if err != nil {
 		return "", err
@@ -507,7 +507,7 @@ func (tb *TelegramBot) workerStatusSummary() (string, error) {
 	return fmt.Sprintf("worker 运行中 (PID: %d)\n%s\n地址: %s", runtime.PID, healthText, tb.workerBaseURL), nil
 }
 
-func (tb *TelegramBot) workerControlKeyboard() tgbotapi.InlineKeyboardMarkup {
+func (tb *TelegramClient) workerControlKeyboard() tgbotapi.InlineKeyboardMarkup {
 	row1 := tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("▶️ 启动", "ctl:worker:start"),
 		tgbotapi.NewInlineKeyboardButtonData("⏹ 停止", "ctl:worker:stop"),
@@ -519,7 +519,7 @@ func (tb *TelegramBot) workerControlKeyboard() tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(row1, row2)
 }
 
-func (tb *TelegramBot) checkWorkerHealth() bool {
+func (tb *TelegramClient) checkWorkerHealth() bool {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(tb.workerBaseURL + "/health")
 	if err != nil {
@@ -529,13 +529,13 @@ func (tb *TelegramBot) checkWorkerHealth() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func (tb *TelegramBot) handleAccountSelection(callback *tgbotapi.CallbackQuery, username string) {
+func (tb *TelegramClient) handleAccountSelection(callback *tgbotapi.CallbackQuery, username string) {
 	tb.answerCallback(callback.ID, fmt.Sprintf("✅ 已选择: @%s", username))
 	tb.showModeSelection(callback.Message.Chat.ID, username)
 }
 
 // showModeSelection 显示下载模式选择
-func (tb *TelegramBot) showModeSelection(chatID int64, username string) {
+func (tb *TelegramClient) showModeSelection(chatID int64, username string) {
 	text := fmt.Sprintf("📥 @%s\n\n请选择下载模式:", username)
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
@@ -553,7 +553,7 @@ func (tb *TelegramBot) showModeSelection(chatID int64, username string) {
 }
 
 // handleModeSelection 处理模式选择
-func (tb *TelegramBot) handleModeSelection(callback *tgbotapi.CallbackQuery, username, mode string) {
+func (tb *TelegramClient) handleModeSelection(callback *tgbotapi.CallbackQuery, username, mode string) {
 	tb.answerCallback(callback.ID, "")
 
 	if mode == "index" {
@@ -564,7 +564,7 @@ func (tb *TelegramBot) handleModeSelection(callback *tgbotapi.CallbackQuery, use
 }
 
 // showShortcodeSelection 显示 Shortcode 选择（历史下载列表）
-func (tb *TelegramBot) showShortcodeSelection(chatID int64, username string) {
+func (tb *TelegramClient) showShortcodeSelection(chatID int64, username string) {
 	// 获取该用户的所有下载记录
 	history := GetDownloadHistory(0) // 0 = 获取全部
 
@@ -610,7 +610,7 @@ func (tb *TelegramBot) showShortcodeSelection(chatID int64, username string) {
 }
 
 // sendThumbnailGrid 发送缩略图网格（使用 Telegram MediaGroup API）
-func (tb *TelegramBot) sendThumbnailGrid(chatID int64, items []*FilesCache, thumbnails map[string]string) {
+func (tb *TelegramClient) sendThumbnailGrid(chatID int64, items []*FilesCache, thumbnails map[string]string) {
 	// 每 10 个一组（Telegram MediaGroup 限制）
 	for i := 0; i < len(items); i += 10 {
 		end := i + 10
@@ -652,7 +652,7 @@ func (tb *TelegramBot) sendThumbnailGrid(chatID int64, items []*FilesCache, thum
 }
 
 // sendShortcodeButtons 发送按钮列表
-func (tb *TelegramBot) sendShortcodeButtons(chatID int64, username string, items []*FilesCache) {
+func (tb *TelegramClient) sendShortcodeButtons(chatID int64, username string, items []*FilesCache) {
 	// 构建按钮
 	var rows [][]tgbotapi.InlineKeyboardButton
 	count := 0
@@ -696,7 +696,7 @@ func (tb *TelegramBot) sendShortcodeButtons(chatID int64, username string, items
 
 // extractShortcodeFromPath 从文件路径中提取 shortcode
 // handleShortcodeSelection 处理 Shortcode 选择
-func (tb *TelegramBot) handleShortcodeSelection(callback *tgbotapi.CallbackQuery, shortcode string) {
+func (tb *TelegramClient) handleShortcodeSelection(callback *tgbotapi.CallbackQuery, shortcode string) {
 	// 立即响应回调，避免超时
 	tb.answerCallback(callback.ID, "✅ 已接收，开始下载...")
 
@@ -704,7 +704,7 @@ func (tb *TelegramBot) handleShortcodeSelection(callback *tgbotapi.CallbackQuery
 	go tb.executeDownloadByShortcode(callback.Message.Chat.ID, shortcode)
 }
 
-func (tb *TelegramBot) handleCancel(callback *tgbotapi.CallbackQuery) {
+func (tb *TelegramClient) handleCancel(callback *tgbotapi.CallbackQuery) {
 	userID := callback.From.ID
 	tb.statesMutex.Lock()
 	delete(tb.userStates, userID)
@@ -714,7 +714,7 @@ func (tb *TelegramBot) handleCancel(callback *tgbotapi.CallbackQuery) {
 	tb.sendMessage(callback.Message.Chat.ID, "❌ 操作已取消")
 }
 
-func (tb *TelegramBot) handleIndexSelection(callback *tgbotapi.CallbackQuery, username string, postIndex int) {
+func (tb *TelegramClient) handleIndexSelection(callback *tgbotapi.CallbackQuery, username string, postIndex int) {
 	userID := callback.From.ID
 
 	tb.statesMutex.Lock()
@@ -728,7 +728,7 @@ func (tb *TelegramBot) handleIndexSelection(callback *tgbotapi.CallbackQuery, us
 	go tb.executeDownload(callback.Message.Chat.ID, username, postIndex)
 }
 
-func (tb *TelegramBot) handleInputRequest(callback *tgbotapi.CallbackQuery, username string) {
+func (tb *TelegramClient) handleInputRequest(callback *tgbotapi.CallbackQuery, username string) {
 	userID := callback.From.ID
 
 	tb.statesMutex.Lock()
@@ -747,7 +747,7 @@ func (tb *TelegramBot) handleInputRequest(callback *tgbotapi.CallbackQuery, user
 	}
 }
 
-func (tb *TelegramBot) handleInputAccountRequest(callback *tgbotapi.CallbackQuery) {
+func (tb *TelegramClient) handleInputAccountRequest(callback *tgbotapi.CallbackQuery) {
 	userID := callback.From.ID
 
 	tb.statesMutex.Lock()
@@ -766,7 +766,7 @@ func (tb *TelegramBot) handleInputAccountRequest(callback *tgbotapi.CallbackQuer
 	}
 }
 
-func (tb *TelegramBot) handleMessage(message *tgbotapi.Message) {
+func (tb *TelegramClient) handleMessage(message *tgbotapi.Message) {
 	userID := message.From.ID
 
 	tb.statesMutex.RLock()
@@ -835,7 +835,7 @@ func (tb *TelegramBot) handleMessage(message *tgbotapi.Message) {
 	}
 }
 
-func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex int) {
+func (tb *TelegramClient) executeDownload(chatID int64, username string, postIndex int) {
 	statusMsg := tb.sendMessage(chatID, fmt.Sprintf("⏳ 正在下载 @%s 的第 %d 个帖子...", username, postIndex))
 
 	// 先检查 worker 是否运行，避免用户等待后才失败。
@@ -882,7 +882,7 @@ func (tb *TelegramBot) executeDownload(chatID int64, username string, postIndex 
 }
 
 // executeDownloadByShortcode 通过 Shortcode 下载
-func (tb *TelegramBot) executeDownloadByShortcode(chatID int64, shortcode string) {
+func (tb *TelegramClient) executeDownloadByShortcode(chatID int64, shortcode string) {
 	statusMsg := tb.sendMessage(chatID, fmt.Sprintf("⏳ 正在下载 shortcode: %s...", shortcode))
 
 	runtime, err := GetServiceRuntime("worker")
@@ -928,7 +928,7 @@ func (tb *TelegramBot) executeDownloadByShortcode(chatID int64, shortcode string
 }
 
 // requestWorkerDownload 调用 worker 的 `/download`（按序号模式）。\n+// worker 返回本机文件路径列表，bot 负责后续上传这些文件。
-func (tb *TelegramBot) requestWorkerDownload(username string, postIndex int) ([]string, error) {
+func (tb *TelegramClient) requestWorkerDownload(username string, postIndex int) ([]string, error) {
 	payload := WorkerDownloadRequest{Username: username, PostIndex: postIndex, Mode: "index"}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -967,7 +967,7 @@ func (tb *TelegramBot) requestWorkerDownload(username string, postIndex int) ([]
 }
 
 // requestWorkerDownloadByShortcode 请求 Worker 通过 Shortcode 下载
-func (tb *TelegramBot) requestWorkerDownloadByShortcode(shortcode string) ([]string, error) {
+func (tb *TelegramClient) requestWorkerDownloadByShortcode(shortcode string) ([]string, error) {
 	payload := WorkerDownloadRequest{Shortcode: shortcode, Mode: "shortcode"}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -1005,7 +1005,7 @@ func (tb *TelegramBot) requestWorkerDownloadByShortcode(shortcode string) ([]str
 	return result.FilePaths, nil
 }
 
-func (tb *TelegramBot) answerCallback(callbackID, text string) {
+func (tb *TelegramClient) answerCallback(callbackID, text string) {
 	callback := tgbotapi.NewCallback(callbackID, text)
 	if _, err := tb.bot.Request(callback); err != nil {
 		// 忽略超时错误，避免日志污染
@@ -1016,7 +1016,7 @@ func (tb *TelegramBot) answerCallback(callbackID, text string) {
 }
 
 // sendChatAction 发送聊天动作状态（显示"正在输入"、"正在上传"等）
-func (tb *TelegramBot) sendChatAction(chatID int64, action string) {
+func (tb *TelegramClient) sendChatAction(chatID int64, action string) {
 	chatAction := tgbotapi.NewChatAction(chatID, action)
 	if _, err := tb.bot.Request(chatAction); err != nil {
 		// 忽略错误，不影响主流程
@@ -1024,7 +1024,7 @@ func (tb *TelegramBot) sendChatAction(chatID int64, action string) {
 	}
 }
 
-func (tb *TelegramBot) showIndexSelection(chatID int64, username string) {
+func (tb *TelegramClient) showIndexSelection(chatID int64, username string) {
 	text := fmt.Sprintf("⏰ @%s - 按时间线下载\n\n", username)
 	text += "请选择帖子序号 (1=最新):"
 
@@ -1058,7 +1058,7 @@ func (tb *TelegramBot) showIndexSelection(chatID int64, username string) {
 }
 
 // handleRefreshCache 处理检查更新请求
-func (tb *TelegramBot) handleRefreshCache(callback *tgbotapi.CallbackQuery, username string) {
+func (tb *TelegramClient) handleRefreshCache(callback *tgbotapi.CallbackQuery, username string) {
 	// 立即响应回调
 	tb.answerCallback(callback.ID, "✅ 正在检查更新...")
 
@@ -1067,7 +1067,7 @@ func (tb *TelegramBot) handleRefreshCache(callback *tgbotapi.CallbackQuery, user
 }
 
 // executeRefreshCache 执行缓存刷新检查
-func (tb *TelegramBot) executeRefreshCache(chatID int64, messageID int, username string) {
+func (tb *TelegramClient) executeRefreshCache(chatID int64, messageID int, username string) {
 	// 更新消息状态
 	tb.editMessage(chatID, messageID, fmt.Sprintf("🔄 正在检查 @%s 的更新...", username))
 
@@ -1094,7 +1094,7 @@ func (tb *TelegramBot) executeRefreshCache(chatID int64, messageID int, username
 }
 
 // requestWorkerCheckUpdate 请求 Worker 检查更新
-func (tb *TelegramBot) requestWorkerCheckUpdate(username string) (needRefresh bool, totalPosts int, err error) {
+func (tb *TelegramClient) requestWorkerCheckUpdate(username string) (needRefresh bool, totalPosts int, err error) {
 	type CheckUpdateRequest struct {
 		Username string `json:"username"`
 	}
@@ -1139,7 +1139,7 @@ func (tb *TelegramBot) requestWorkerCheckUpdate(username string) (needRefresh bo
 }
 
 // handleFavoritesCommand 处理 /favorites 命令入口，仅 Admin 可用。
-func (tb *TelegramBot) handleFavoritesCommand(message *tgbotapi.Message) {
+func (tb *TelegramClient) handleFavoritesCommand(message *tgbotapi.Message) {
 	if !tb.isAdminUser(message.From.ID) {
 		tb.sendMessage(message.Chat.ID, "❌ 仅管理员可使用 /favorites")
 		return
@@ -1148,7 +1148,7 @@ func (tb *TelegramBot) handleFavoritesCommand(message *tgbotapi.Message) {
 }
 
 // sendFavoritesList 发送常用账户列表及操作按钮。
-func (tb *TelegramBot) sendFavoritesList(chatID int64) {
+func (tb *TelegramClient) sendFavoritesList(chatID int64) {
 	tb.accountsMu.RLock()
 	accounts := make([]string, len(tb.favoriteAccounts))
 	copy(accounts, tb.favoriteAccounts)
@@ -1180,7 +1180,7 @@ func (tb *TelegramBot) sendFavoritesList(chatID int64) {
 }
 
 // handleFavoriteCallback 处理 fav: 前缀的回调。
-func (tb *TelegramBot) handleFavoriteCallback(callback *tgbotapi.CallbackQuery) {
+func (tb *TelegramClient) handleFavoriteCallback(callback *tgbotapi.CallbackQuery) {
 	if !tb.isAdminUser(callback.From.ID) {
 		tb.answerCallback(callback.ID, "❌ 仅管理员可操作")
 		return
@@ -1221,7 +1221,7 @@ func (tb *TelegramBot) handleFavoriteCallback(callback *tgbotapi.CallbackQuery) 
 }
 
 // addFavoriteAccount 添加账户到常用列表并持久化配置。
-func (tb *TelegramBot) addFavoriteAccount(account string) error {
+func (tb *TelegramClient) addFavoriteAccount(account string) error {
 	tb.accountsMu.Lock()
 	defer tb.accountsMu.Unlock()
 
@@ -1235,7 +1235,7 @@ func (tb *TelegramBot) addFavoriteAccount(account string) error {
 }
 
 // removeFavoriteAccount 从常用列表移除账户并持久化配置。
-func (tb *TelegramBot) removeFavoriteAccount(account string) error {
+func (tb *TelegramClient) removeFavoriteAccount(account string) error {
 	tb.accountsMu.Lock()
 	defer tb.accountsMu.Unlock()
 
@@ -1257,7 +1257,7 @@ func (tb *TelegramBot) removeFavoriteAccount(account string) error {
 
 // persistFavorites 将当前 favoriteAccounts 写回 config.json。
 // 调用前必须已持有 accountsMu 写锁。
-func (tb *TelegramBot) persistFavorites() error {
+func (tb *TelegramClient) persistFavorites() error {
 	config, err := LoadConfig(tb.configPath)
 	if err != nil {
 		return fmt.Errorf("读取配置失败: %w", err)
