@@ -51,14 +51,14 @@
 package main
 
 import (
-	“encoding/json”
-	“os”
-	“path/filepath”
-	“sync”
-	“time”
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
 )
 
-const cacheDir = “cache”
+const cacheDir = "cache"
 
 // MediaCache 媒体 URL 缓存（shortcode -> 媒体信息）。
 //
@@ -67,38 +67,38 @@ const cacheDir = “cache”
 // - value: 媒体类型 + URL 列表
 // 一般可视为长期有效；当 Instagram 资源 URL 失效时，可手动清理对应 key。
 type MediaCache struct {
-	Type  string   `json:”type”`
-	URLs  []string `json:”urls”`
-	Types []string `json:”types”`
+	Type  string   `json:"type"`
+	URLs  []string `json:"urls"`
+	Types []string `json:"types"`
 }
 
 // PostsCache 用户帖子列表缓存（username -> 帖子 shortcodes 列表）。
 //
-// 该缓存用于”按时间线序号下载”的第一步：主页定位第 N 条帖子。
+// 该缓存用于"按时间线序号下载"的第一步：主页定位第 N 条帖子。
 // - UpdatedAt: 最近一次刷新时间
 // - ExpiresAt: 到期后视为无效（避免长期依赖旧主页结构）
 type PostsCache struct {
-	Posts     []PostItem `json:”posts”`
-	UpdatedAt time.Time  `json:”updated_at”`
-	ExpiresAt time.Time  `json:”expires_at”`
+	Posts     []PostItem `json:"posts"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
 }
 
-// PostItem 是帖子在”时间线序号”语义下的定位信息。
+// PostItem 是帖子在"时间线序号"语义下的定位信息。
 // Index 从 1 开始，1 表示主页最新的一条。
 type PostItem struct {
-	Index     int    `json:”index”`
-	Shortcode string `json:”shortcode”`
+	Index     int    `json:"index"`
+	Shortcode string `json:"shortcode"`
 }
 
 // FilesCache 本地文件缓存（shortcode -> 已下载文件路径）。
 //
 // 这是最快的一层缓存：如果文件仍存在，worker 可以直接返回路径，跳过抓取与下载。
-// Username/PostIndex 用于 bot 侧展示历史下载与”按序号”的溯源信息；按 shortcode 下载时 PostIndex 可能为 0。
+// Username/PostIndex 用于 bot 侧展示历史下载与"按序号"的溯源信息；按 shortcode 下载时 PostIndex 可能为 0。
 type FilesCache struct {
-	Files        []string  `json:”files”`
-	Username     string    `json:”username”`
-	PostIndex    int       `json:”post_index”`
-	DownloadedAt time.Time `json:”downloaded_at”`
+	Files        []string  `json:"files"`
+	Username     string    `json:"username"`
+	PostIndex    int       `json:"post_index"`
+	DownloadedAt time.Time `json:"downloaded_at"`
 }
 
 var (
@@ -117,7 +117,7 @@ var (
 func init() {
 	// 确保缓存目录存在
 	os.MkdirAll(cacheDir, 0755)
-	os.MkdirAll(filepath.Join(cacheDir, “thumbnails”), 0755)
+	os.MkdirAll(filepath.Join(cacheDir, "thumbnails"), 0755)
 	initCacheMaps()
 }
 
@@ -130,7 +130,7 @@ func initCacheMaps() {
 }
 
 // LoadMediaCache 加载媒体 URL 缓存。
-// 使用”惰性加载 + 双重检查 + RWMutex”：
+// 使用"惰性加载 + 双重检查 + RWMutex"：
 // - 多读少写场景下减少锁竞争；
 // - 第一次读取时从磁盘加载，后续直接走内存 map。
 func LoadMediaCache() (map[string]*MediaCache, error) {
@@ -231,7 +231,7 @@ func SavePostsCache(cache map[string]*PostsCache) error {
 }
 
 // LoadFilesCache 加载文件缓存（shortcode -> 本地文件路径）。
-// 文件缓存除了读盘外，在 `GetFilesFromCache` 还会做“文件存在性校验”，避免返回已被删除的路径。
+// 文件缓存除了读盘外，在 `GetFilesFromCache` 还会做"文件存在性校验"，避免返回已被删除的路径。
 func LoadFilesCache() (map[string]*FilesCache, error) {
 	filesCacheMu.RLock()
 	if len(filesCacheMap) > 0 {
@@ -313,7 +313,7 @@ func SavePostsToCache(username string, posts *PostsCache) error {
 
 // GetFilesFromCache 从文件缓存获取文件列表。
 // 除了缓存命中外，这里会验证每个文件路径是否仍存在：
-// - 若任意文件缺失，则视为缓存失效，促使 worker 走“重新下载”路径。
+// - 若任意文件缺失，则视为缓存失效，促使 worker 走"重新下载"路径。
 func GetFilesFromCache(shortcode string) (*FilesCache, bool) {
 	cache, _ := LoadFilesCache()
 	files, ok := cache[shortcode]
@@ -329,7 +329,7 @@ func GetFilesFromCache(shortcode string) (*FilesCache, bool) {
 	return files, true
 }
 
-// SaveFilesToCache 保存文件列表到缓存，并同步更新“下载历史”的内存缓存。
+// SaveFilesToCache 保存文件列表到缓存，并同步更新"下载历史"的内存缓存。
 // 该函数是事件驱动更新：当写入新下载记录时，尽量避免下一次 bot 侧读取历史还要重新排序全量数据。
 func SaveFilesToCache(shortcode string, files *FilesCache) error {
 	cache, _ := LoadFilesCache()

@@ -63,8 +63,26 @@ func LoadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
+// SaveConfig 将配置原子写入到指定路径：
+// 先写入临时文件，再 rename，避免写入中途崩溃导致配置损坏。
+func SaveConfig(path string, config *Config) error {
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化配置失败: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("写入临时配置失败: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("替换配置文件失败: %w", err)
+	}
+	return nil
+}
+
 // GetWorkerAddr 返回 worker 监听地址；当配置缺失或为空时回退到默认值。
-// 注意：这里返回的是“监听地址/host:port”形式，不保证带 scheme。
+// 注意：这里返回的是"监听地址/host:port"形式，不保证带 scheme。
 func (c *Config) GetWorkerAddr() string {
 	if c == nil || strings.TrimSpace(c.WorkerAddr) == "" {
 		return defaultWorkerListenAddr

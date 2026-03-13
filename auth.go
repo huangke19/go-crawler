@@ -78,7 +78,7 @@ type Cookie struct {
 	Secure   bool    `json:"secure"`
 }
 
-// Login 执行“自动填写账号密码”的登录流程。
+// Login 执行"自动填写账号密码"的登录流程。
 // 实际使用中通常推荐 `ManualLogin()`：可处理验证码/2FA 等需要人工交互的场景。
 func Login(ctx context.Context, username, password string) error {
 	fmt.Println("正在登录 Instagram...")
@@ -159,10 +159,10 @@ func SetCookies(ctx context.Context, cookies []*Cookie) error {
 // EnsureLoggedIn 确保当前浏览器上下文具备有效登录态。
 // 流程：
 // - 尝试从本地 session 文件加载 cookies 并注入浏览器；
-// - 刷新页面后做一个轻量校验（是否仍出现“登录”入口）；
+// - 刷新页面后做一个轻量校验（是否仍出现"登录"入口）；
 // - 若无法确认有效，则返回错误并提示先执行 `crawler login`。
 //
-// 该函数偏向“快速失败”：如果 cookie 过期，应尽快引导重新登录，避免后续 GraphQL/下载阶段才报错。
+// 该函数偏向"快速失败"：如果 cookie 过期，应尽快引导重新登录，避免后续 GraphQL/下载阶段才报错。
 func EnsureLoggedIn(ctx context.Context) error {
 	// 尝试加载已保存的 session
 	cookies, err := LoadSession()
@@ -203,7 +203,7 @@ func EnsureLoggedIn(ctx context.Context) error {
 }
 
 // CreateBrowserContext 创建有头浏览器上下文（用于登录等需要人工交互的操作）。
-// 这里会设置较“像真实用户”的 UA，并关闭部分自动化特征标记，以降低被页面脚本识别的概率。
+// 这里会设置较"像真实用户"的 UA，并关闭部分自动化特征标记，以降低被页面脚本识别的概率。
 func CreateBrowserContext() (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", false), // 登录时需要显示浏览器

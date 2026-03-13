@@ -21,6 +21,7 @@ func handleSetupBot() {
 	fmt.Println("dl - download 的简写")
 	fmt.Println("status - 查看 bot 与 worker 状态")
 	fmt.Println("control - 管理员控制 worker 启停")
+	fmt.Println("favorites - 管理常用账户列表，仅管理员")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
 	fmt.Println("5. 完成后，在 Telegram 中输入 / 即可看到命令提示")

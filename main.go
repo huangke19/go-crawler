@@ -74,7 +74,7 @@ func main() {
 	}
 }
 
-// printUsage 输出帮助信息。CLI 的参数解析按“子命令 + 位置参数”设计，
+// printUsage 输出帮助信息。CLI 的参数解析按"子命令 + 位置参数"设计，
 // 以便 bot/worker/下载三种模式的入口尽量简洁明确。
 func printUsage() {
 	fmt.Println("Instagram Crawler - 优雅的 Instagram 内容下载工具")
@@ -118,7 +118,7 @@ func handleLogin() {
 }
 
 // handleDownload 是本地下载模式入口。
-// 该模式会启动一个“快速无头浏览器上下文”，验证 Cookie 是否有效，然后：
+// 该模式会启动一个"快速无头浏览器上下文"，验证 Cookie 是否有效，然后：
 // 主页定位第 N 条帖子 -> GraphQL 获取媒体 URL -> 并发下载落盘。
 func handleDownload() {
 	downloadCmd := flag.NewFlagSet("download", flag.ExitOnError)

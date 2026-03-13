@@ -46,8 +46,8 @@
 | **scraper.go** | 页面爬取与媒体 URL 提取 | `NavigateToUser()`, `ScrollToLoadMore()`, `GetPostByIndex()`, `ExtractMediaURLs()`, `extractMediaFromJSON()` | ~480 |
 | **downloader.go** | 文件下载与并发控制 | `CreateUserDirectory()`, `DownloadMedia()`, `DownloadPost()`, `downloadConcurrently()` | ~270 |
 | **cache.go** | 三层缓存系统 | `LoadMediaCache()`, `LoadPostsCache()`, `LoadFilesCache()`, `GetDownloadHistory()` | ~370 |
-| **config.go** | 配置管理 | `LoadConfig()`, `GetWorkerAddr()`, `GetWorkerBaseURL()` | ~66 |
-| **bot.go** | Telegram Bot 实现 | `NewTelegramBot()`, `Start()`, `handleCommand()`, `handleCallback()`, `downloadPost()` | ~500+ |
+| **config.go** | 配置管理 | `LoadConfig()`, `SaveConfig()`, `GetWorkerAddr()`, `GetWorkerBaseURL()` | ~85 |
+| **bot.go** | Telegram Bot 实现 | `NewTelegramBot()`, `Start()`, `handleCommand()`, `handleCallback()`, `handleFavoritesCommand()`, `sendFavoritesList()`, `addFavoriteAccount()`, `removeFavoriteAccount()` | ~600+ |
 | **worker.go** | Worker HTTP 服务 | `NewWorkerServer()`, `RunWorker()`, `handleDownload()`, `handleCheckUpdate()` | ~400+ |
 | **daemon.go** | 守护进程管理 | `StartServiceDaemon()`, `StopServiceDaemon()`, `RestartServiceDaemon()`, `GetServiceRuntime()` | ~377 |
 | **gobot.go** | 守护进程 CLI 工具 | `main()`, `printGobotUsage()`, `showLogs()` | ~118 |
@@ -174,6 +174,8 @@ go-crawler/
       bot              *tgbotapi.BotAPI
       allowedUsers     map[int64]bool
       favoriteAccounts []string
+      accountsMu       sync.RWMutex  // 保护 favoriteAccounts 的读写锁
+      configPath       string        // 配置文件路径，用于持久化
       userStates       map[int64]*UserState
       statesMutex      sync.RWMutex
   }
@@ -187,10 +189,15 @@ go-crawler/
 - **关键函数**:
   - `NewTelegramBot(token, allowedUserIDs, favoriteAccounts)` - 创建 Bot 实例
   - `Start()` - 启动 Bot，监听消息
-  - `handleCommand(message)` - 处理命令（/start, /help, /download, /status）
+  - `handleCommand(message)` - 处理命令（/start, /help, /download, /status, /favorites）
   - `handleCallback(callback)` - 处理按钮点击
   - `downloadPost(username, postIndex)` - 执行下载任务
   - `sendFile(chatID, filePath)` - 上传文件到 Telegram
+  - `handleFavoritesCommand(message)` - /favorites 入口，仅 Admin
+  - `sendFavoritesList(chatID)` - 发送账户列表 + fav: 操作按钮
+  - `handleFavoriteCallback(callback)` - 处理 fav:add / fav:rm: 回调
+  - `addFavoriteAccount(account)` - 加写锁、去重、追加、写回 config.json
+  - `removeFavoriteAccount(account)` - 加写锁、过滤、写回 config.json
 
 ### 7. daemon.go (守护进程管理)
 - **职责**: 后台进程管理、PID 管理、日志记录

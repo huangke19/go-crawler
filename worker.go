@@ -10,8 +10,8 @@
 //   - 优雅关闭：等待活跃请求完成
 //
 // 核心概念：
-//   - Worker 是”执行面”：负责耗时的抓取与下载
-//   - Bot 是”控制面”：负责交互与文件上传
+//   - Worker 是"执行面"：负责耗时的抓取与下载
+//   - Bot 是"控制面"：负责交互与文件上传
 //   - 分离设计：避免 Bot 因长耗时操作而无法响应用户
 //
 // HTTP 接口：
@@ -21,17 +21,17 @@
 //
 // 下载请求格式：
 //   {
-//     “mode”: “index” 或 “shortcode”,
-//     “username”: “用户名（mode=index 时必需）”,
-//     “post_index”: 帖子序号（mode=index 时必需）,
-//     “shortcode”: “shortcode（mode=shortcode 时必需）”
+//     "mode": "index" 或 "shortcode",
+//     "username": "用户名（mode=index 时必需）",
+//     "post_index": 帖子序号（mode=index 时必需）,
+//     "shortcode": "shortcode（mode=shortcode 时必需）"
 //   }
 //
 // 下载响应格式：
 //   {
-//     “success”: true/false,
-//     “message”: “错误信息或成功提示”,
-//     “file_paths”: [“文件路径1”, “文件路径2”, ...]
+//     "success": true/false,
+//     "message": "错误信息或成功提示",
+//     "file_paths": ["文件路径1", "文件路径2", ...]
 //   }
 //
 // 缓存命中顺序：
@@ -53,29 +53,29 @@
 package main
 
 import (
-	“bytes”
-	“context”
-	“encoding/json”
-	“fmt”
-	“log”
-	“net/http”
-	“os”
-	“os/signal”
-	“strconv”
-	“strings”
-	“sync”
-	“syscall”
-	“time”
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
 )
 
 const (
-	defaultWorkerListenAddr = “127.0.0.1:18080”
+	defaultWorkerListenAddr = "127.0.0.1:18080"
 )
 
 // WorkerServer 是下载执行面 HTTP 服务。
 //
 // 设计要点：
-// - Worker 负责”耗时且可能阻塞”的抓取与下载逻辑；Bot 只做交互与文件上传。
+// - Worker 负责"耗时且可能阻塞"的抓取与下载逻辑；Bot 只做交互与文件上传。
 // - Worker 复用一个无头浏览器实例（避免每个请求都启动 Chrome）；
 // - 通过 activeReqs 跟踪活跃请求，实现优雅关闭（尽量不半途打断下载）。
 type WorkerServer struct {
@@ -91,34 +91,34 @@ type WorkerServer struct {
 // - mode=index：按用户主页时间线序号下载（需要 username + post_index）
 // - mode=shortcode：按 shortcode 下载（只需要 shortcode）
 type WorkerDownloadRequest struct {
-	Username  string `json:”username,omitempty”`
-	PostIndex int    `json:”post_index,omitempty”`
-	Shortcode string `json:”shortcode,omitempty”`
-	Mode      string `json:”mode”` // “index” 或 “shortcode”
+	Username  string `json:"username,omitempty"`
+	PostIndex int    `json:"post_index,omitempty"`
+	Shortcode string `json:"shortcode,omitempty"`
+	Mode      string `json:"mode"` // "index" 或 "shortcode"
 }
 
 // WorkerDownloadResponse 是下载结果响应体。
 // 成功时返回 file_paths（本机文件绝对/相对路径，供 bot 上传）。
 type WorkerDownloadResponse struct {
-	Success   bool     `json:”success”`
-	Message   string   `json:”message,omitempty”`
-	FilePaths []string `json:”file_paths,omitempty”`
+	Success   bool     `json:"success"`
+	Message   string   `json:"message,omitempty"`
+	FilePaths []string `json:"file_paths,omitempty"`
 }
 
 // getWorkerListenAddr 获取 worker 监听地址。
 // 优先级：环境变量 `CRAWLER_WORKER_ADDR` > config.json 的 worker_addr > 默认值。
 func getWorkerListenAddr() string {
-	if value := strings.TrimSpace(os.Getenv(“CRAWLER_WORKER_ADDR”)); value != “” {
+	if value := strings.TrimSpace(os.Getenv("CRAWLER_WORKER_ADDR")); value != "" {
 		return value
 	}
 
 	type workerConfig struct {
-		WorkerAddr string `json:”worker_addr”`
+		WorkerAddr string `json:"worker_addr"`
 	}
-	if data, err := os.ReadFile(“config.json”); err == nil {
+	if data, err := os.ReadFile("config.json"); err == nil {
 		var cfg workerConfig
 		if json.Unmarshal(data, &cfg) == nil {
-			if value := strings.TrimSpace(cfg.WorkerAddr); value != “” {
+			if value := strings.TrimSpace(cfg.WorkerAddr); value != "" {
 				return value
 			}
 		}
@@ -392,7 +392,7 @@ func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) 
 	return files, nil
 }
 
-// downloadByIndex 通过“主页时间线序号”下载。
+// downloadByIndex 通过"主页时间线序号"下载。
 //
 // 关键点：
 // - 先尝试从 posts_cache 命中 shortcode（避免打开主页）\n+// - 若缓存不存在/过期/数量不足，则访问主页加载至少 postIndex 条并刷新缓存\n+// - 拿到 shortcode 后复用 downloadByShortcode（自动套用媒体/文件缓存）
@@ -555,7 +555,7 @@ func workerPortInt() int {
 	return port
 }
 
-// handleCheckUpdate 处理检查更新请求。\n+// 用于 bot 侧“检查更新”按钮：判断主页最新帖子是否变化，必要时刷新 posts_cache。
+// handleCheckUpdate 处理检查更新请求。\n+// 用于 bot 侧"检查更新"按钮：判断主页最新帖子是否变化，必要时刷新 posts_cache。
 func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	ws.activeReqs.Add(1)
 	defer ws.activeReqs.Done()
@@ -615,7 +615,7 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// checkCacheUpdate 检查缓存是否需要更新。\n+// 通过“缓存第 1 条 shortcode vs 实际主页第 1 条 shortcode”进行对比，快速判断是否有新帖子。
+// checkCacheUpdate 检查缓存是否需要更新。\n+// 通过"缓存第 1 条 shortcode vs 实际主页第 1 条 shortcode"进行对比，快速判断是否有新帖子。
 func (ws *WorkerServer) checkCacheUpdate(username string) (needRefresh bool, totalPosts int, err error) {
 	log.Printf("  检查 @%s 的缓存状态...", username)
 
