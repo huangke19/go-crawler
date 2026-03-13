@@ -47,9 +47,11 @@ import (
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        20,
 		MaxIdleConnsPerHost: 5,
 		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
 	},
 }
 
@@ -137,7 +139,7 @@ func DownloadPostAndReturnPaths(username string, postIndex int, mediaInfo *Media
 }
 
 // downloadPostInternal 内部下载函数，返回文件路径列表。
-// 注意：这里不做去重/断点续传；如果需要“重复调用秒回”，应由上层文件缓存（`files_cache.json`）负责。
+// 注意：这里不做去重/断点续传；如果需要"重复调用秒回"，应由上层文件缓存（`files_cache.json`）负责。
 func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) ([]string, error) {
 	// 创建用户目录
 	userDir, err := CreateUserDirectory(username)
@@ -195,7 +197,7 @@ func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) 
 }
 
 // downloadMediaByShortcode 通过 shortcode 下载媒体（用于缓存模式）。
-// 该模式把落盘路径固定为 `downloads/cache/<shortcode>/...`，便于 “按 shortcode 下载” 直接命中文件缓存。
+// 该模式把落盘路径固定为 `downloads/cache/<shortcode>/...`，便于 "按 shortcode 下载" 直接命中文件缓存。
 func downloadMediaByShortcode(shortcode string, mediaInfo *MediaInfo) ([]string, error) {
 	// 创建 cache 目录下的 shortcode 子目录
 	cacheDir := filepath.Join("downloads", "cache", shortcode)
@@ -288,7 +290,7 @@ func downloadConcurrently(tasks []downloadTask, maxConcurrent int, retries int) 
 }
 
 // GetFileExtension 从 URL 获取文件扩展名。
-// 该函数目前主要用于“兜底推断”，真实扩展名优先依据媒体类型（image/video）决定。
+// 该函数目前主要用于"兜底推断"，真实扩展名优先依据媒体类型（image/video）决定。
 func GetFileExtension(url string) string {
 	// 移除查询参数
 	if idx := strings.Index(url, "?"); idx != -1 {

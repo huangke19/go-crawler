@@ -34,22 +34,23 @@
 package main
 
 import (
-	“context”
-	“encoding/json”
-	“fmt”
-	“io”
-	“net/http”
-	“strings”
-	“time”
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
-	“github.com/PuerkitoBio/goquery”
-	“github.com/chromedp/chromedp”
+	"github.com/PuerkitoBio/goquery"
+	"github.com/chromedp/chromedp"
 )
 
 // NavigateToUser 访问用户主页。
 //
 // 说明：
-// - 主页访问用于”按时间线序号”定位帖子链接（第 1 条=最新）。
+// - 主页访问用于"按时间线序号"定位帖子链接（第 1 条=最新）。
 // - 实际媒体 URL（图片/视频）不从主页 HTML 抓取，而是后续通过 GraphQL 接口获取。
 func NavigateToUser(ctx context.Context, username string) error {
 	url := fmt.Sprintf("https://www.instagram.com/%s/", username)
@@ -85,7 +86,7 @@ func NavigateToUser(ctx context.Context, username string) error {
 // ScrollToLoadMore 滚动页面以加载更多帖子。
 //
 // Instagram 主页通常会按批次懒加载帖子列表（常见每次约 12 条）。
-// 这里用“滚动次数 = targetIndex/12 + 1”的粗略策略，并通过前后链接数量差异判断是否加载成功。
+// 这里用"滚动次数 = targetIndex/12 + 1"的粗略策略，并通过前后链接数量差异判断是否加载成功。
 func ScrollToLoadMore(ctx context.Context, targetIndex int) error {
 	// Instagram 通常每次加载 12 个帖子
 	// 如果目标索引大于 12，需要滚动
@@ -212,7 +213,7 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 
 // GetAllPostLinks 获取用户主页的帖子链接列表（用于缓存/刷新）。
 //
-// 参数 minCount 表示“至少需要加载到多少条”；实际返回可能大于 minCount（取决于页面一次性加载数量）。
+// 参数 minCount 表示"至少需要加载到多少条"；实际返回可能大于 minCount（取决于页面一次性加载数量）。
 func GetAllPostLinks(ctx context.Context, minCount int) ([]string, error) {
 	fmt.Printf("正在获取帖子列表（至少 %d 条）...\n", minCount)
 
@@ -307,19 +308,20 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	fmt.Printf("  已加载 %d 个 cookies\n", len(cookies))
 
 	// 构造 GraphQL POST 请求（参考 instaloader 的调用方式）。
-	// doc_id 可能随 Instagram 更新而变化；当出现“接口返回结构变化/无数据”时，这里通常是首要排查点。
+	// doc_id 可能随 Instagram 更新而变化；当出现"接口返回结构变化/无数据"时，这里通常是首要排查点。
 	docID := "8845758582119845"
 	variables := fmt.Sprintf(`{"shortcode":"%s"}`, shortcode)
 
-	// 构造表单数据
-	formData := fmt.Sprintf("variables=%s&doc_id=%s&server_timestamps=true",
-		strings.ReplaceAll(variables, `"`, `%22`),
-		docID)
+	// 构造表单数据（使用 url.Values 正确编码）
+	formData := url.Values{}
+	formData.Set("variables", variables)
+	formData.Set("doc_id", docID)
+	formData.Set("server_timestamps", "true")
 
 	apiURL := "https://www.instagram.com/graphql/query"
 
 	// 创建 HTTP POST 请求
-	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData))
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %v", err)
 	}
@@ -328,10 +330,10 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("X-IG-App-ID", "936619743392459")
 	req.Header.Set("Referer", postURL)
+	req.Header.Set("Origin", "https://www.instagram.com")
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("authority", "www.instagram.com")
-	req.Header.Set("scheme", "https")
 
 	// 添加 cookies 并提取 csrftoken
 	var cookieStrs []string

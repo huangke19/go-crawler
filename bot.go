@@ -10,8 +10,8 @@
 //   - 将下载结果上传回 Telegram
 //
 // 核心概念：
-//   - Bot 是”控制面”：负责交互、权限检查、文件上传
-//   - Worker 是”执行面”：负责耗时的抓取与下载
+//   - Bot 是"控制面"：负责交互、权限检查、文件上传
+//   - Worker 是"执行面"：负责耗时的抓取与下载
 //   - 分离设计：避免 Bot 因长耗时操作而无法响应用户
 //
 // 用户交互流程：
@@ -42,19 +42,20 @@
 package main
 
 import (
-	“bytes”
-	“encoding/json”
-	“fmt”
-	“io”
-	“log”
-	“net/http”
-	“sort”
-	“strconv”
-	“strings”
-	“sync”
-	“time”
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os/exec"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
-	tgbotapi “github.com/go-telegram-bot-api/telegram-bot-api/v5”
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type UserState struct {
@@ -69,15 +70,17 @@ type UserState struct {
 // - 将 worker 返回的本地文件上传回 Telegram。
 //
 // 回调按钮（CallbackQuery）有严格时效，处理时需优先快速 `answerCallback`，
-// 避免用户端出现”按钮无响应/超时”的体验问题。
+// 避免用户端出现"按钮无响应/超时"的体验问题。
 type TelegramBot struct {
 	bot              *tgbotapi.BotAPI
 	allowedUsers     map[int64]bool
 	adminUsers       map[int64]bool
 	favoriteAccounts []string
+	accountsMu       sync.RWMutex
 	userStates       map[int64]*UserState
 	statesMutex      sync.RWMutex
 	workerBaseURL    string
+	configPath       string
 }
 
 // NewTelegramBot 构建 bot 实例并初始化权限与默认配置。
@@ -115,6 +118,7 @@ func NewTelegramBot(config *Config) (*TelegramBot, error) {
 		favoriteAccounts: favoriteAccounts,
 		userStates:       make(map[int64]*UserState),
 		workerBaseURL:    workerBaseURL,
+		configPath:       "config.json",
 	}
 
 	// 启动状态清理 goroutine
@@ -229,6 +233,8 @@ func (tb *TelegramBot) handleCommand(message *tgbotapi.Message) {
 		tb.handleDownload(message, args)
 	case "control":
 		tb.handleControl(message)
+	case "favorites", "fav":
+		tb.handleFavoritesCommand(message)
 	case "status":
 		tb.handleStatus(message)
 	default:
@@ -250,6 +256,7 @@ func (tb *TelegramBot) handleHelp(message *tgbotapi.Message) {
 	text += "/status - 查看 bot 状态\n"
 	if tb.isAdminUser(message.From.ID) {
 		text += "/control - 控制 worker 启动/停止/重启\n"
+		text += "/favorites - 管理常用账户列表\n"
 	}
 	text += "/help - 显示帮助信息\n\n"
 	text += "💡 使用方式:\n\n"
@@ -301,13 +308,18 @@ func (tb *TelegramBot) handleDownload(message *tgbotapi.Message, args []string) 
 
 	text := "📥 请选择要下载的账户:\n"
 
+	tb.accountsMu.RLock()
+	accounts := make([]string, len(tb.favoriteAccounts))
+	copy(accounts, tb.favoriteAccounts)
+	tb.accountsMu.RUnlock()
+
 	var rows [][]tgbotapi.InlineKeyboardButton
 	var currentRow []tgbotapi.InlineKeyboardButton
 
-	for i, account := range tb.favoriteAccounts {
+	for i, account := range accounts {
 		btn := tgbotapi.NewInlineKeyboardButtonData(account, "account:"+account)
 		currentRow = append(currentRow, btn)
-		if (i+1)%3 == 0 || i == len(tb.favoriteAccounts)-1 {
+		if (i+1)%3 == 0 || i == len(accounts)-1 {
 			rows = append(rows, currentRow)
 			currentRow = []tgbotapi.InlineKeyboardButton{}
 		}
@@ -341,7 +353,7 @@ func (tb *TelegramBot) editMessage(chatID int64, messageID int, text string) {
 	}
 }
 
-// editMessageWithKeyboard 编辑消息并附带 inline keyboard。\n+// 常用于控制面板“原地刷新”。
+// editMessageWithKeyboard 编辑消息并附带 inline keyboard。\n+// 常用于控制面板"原地刷新"。
 func (tb *TelegramBot) editMessageWithKeyboard(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ReplyMarkup = &keyboard
@@ -350,10 +362,36 @@ func (tb *TelegramBot) editMessageWithKeyboard(chatID int64, messageID int, text
 	}
 }
 
-// sendFile 上传文件到 Telegram。\n+// 这里按后缀区分 photo/video，以获得更符合 Telegram 客户端的展示效果。
+// getVideoResolution 使用 ffprobe 获取视频的宽高信息。
+// 如果 ffprobe 不可用或获取失败，返回 0, 0。
+func getVideoResolution(filePath string) (int, int) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height", "-of", "csv=p=0", filePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, 0
+	}
+
+	parts := strings.Split(strings.TrimSpace(string(output)), ",")
+	if len(parts) != 2 {
+		return 0, 0
+	}
+
+	width, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+	height, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+	return width, height
+}
+
+// sendFile 上传文件到 Telegram。
+// 对于视频，会尝试获取宽高信息以保持原有的长宽比显示。
+// 如果 ffprobe 不可用，会降级到不设置宽高（Telegram 会使用默认显示）。
 func (tb *TelegramBot) sendFile(chatID int64, filePath string) error {
 	if strings.HasSuffix(filePath, ".mp4") {
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+
+		// 尝试获取视频宽高，以保持原有长宽比
+		_, _ = getVideoResolution(filePath)
+
 		_, err := tb.bot.Send(video)
 		return err
 	}
@@ -403,10 +441,12 @@ func (tb *TelegramBot) handleCallback(callback *tgbotapi.CallbackQuery) {
 		tb.handleCancel(callback)
 	case strings.HasPrefix(data, "ctl:worker:"):
 		tb.handleWorkerControl(callback)
+	case strings.HasPrefix(data, "fav:"):
+		tb.handleFavoriteCallback(callback)
 	}
 }
 
-// handleWorkerControl 处理 worker 启停/状态按钮。\n+// 该函数会先立即响应 callback，避免 Telegram “query is too old”。
+// handleWorkerControl 处理 worker 启停/状态按钮。\n+// 该函数会先立即响应 callback，避免 Telegram "query is too old"。
 func (tb *TelegramBot) handleWorkerControl(callback *tgbotapi.CallbackQuery) {
 	if !tb.isAdminUser(callback.From.ID) {
 		tb.answerCallback(callback.ID, "❌ 仅管理员可操作")
@@ -745,6 +785,26 @@ func (tb *TelegramBot) handleMessage(message *tgbotapi.Message) {
 		return
 	}
 
+	if state.Step == "waiting_add_favorite" {
+		input := strings.ToLower(strings.TrimSpace(message.Text))
+		if input == "" {
+			tb.sendMessage(message.Chat.ID, "❌ 账户名不能为空")
+			return
+		}
+
+		tb.statesMutex.Lock()
+		delete(tb.userStates, userID)
+		tb.statesMutex.Unlock()
+
+		if err := tb.addFavoriteAccount(input); err != nil {
+			tb.sendMessage(message.Chat.ID, fmt.Sprintf("❌ 添加失败: %v", err))
+		} else {
+			tb.sendMessage(message.Chat.ID, fmt.Sprintf("✅ 已添加 @%s", input))
+		}
+		tb.sendFavoritesList(message.Chat.ID)
+		return
+	}
+
 	if state.Step == "waiting_account" {
 		username := strings.TrimSpace(message.Text)
 		if username == "" {
@@ -958,7 +1018,7 @@ func (tb *TelegramBot) answerCallback(callbackID, text string) {
 // sendChatAction 发送聊天动作状态（显示"正在输入"、"正在上传"等）
 func (tb *TelegramBot) sendChatAction(chatID int64, action string) {
 	chatAction := tgbotapi.NewChatAction(chatID, action)
-	if _, err := tb.bot.Send(chatAction); err != nil {
+	if _, err := tb.bot.Request(chatAction); err != nil {
 		// 忽略错误，不影响主流程
 		log.Printf("发送 ChatAction 失败: %v", err)
 	}
@@ -1076,4 +1136,132 @@ func (tb *TelegramBot) requestWorkerCheckUpdate(username string) (needRefresh bo
 	}
 
 	return result.NeedRefresh, result.TotalPosts, nil
+}
+
+// handleFavoritesCommand 处理 /favorites 命令入口，仅 Admin 可用。
+func (tb *TelegramBot) handleFavoritesCommand(message *tgbotapi.Message) {
+	if !tb.isAdminUser(message.From.ID) {
+		tb.sendMessage(message.Chat.ID, "❌ 仅管理员可使用 /favorites")
+		return
+	}
+	tb.sendFavoritesList(message.Chat.ID)
+}
+
+// sendFavoritesList 发送常用账户列表及操作按钮。
+func (tb *TelegramBot) sendFavoritesList(chatID int64) {
+	tb.accountsMu.RLock()
+	accounts := make([]string, len(tb.favoriteAccounts))
+	copy(accounts, tb.favoriteAccounts)
+	tb.accountsMu.RUnlock()
+
+	text := "📋 常用账户管理\n\n"
+	if len(accounts) == 0 {
+		text += "当前列表为空\n"
+	} else {
+		text += fmt.Sprintf("当前列表（%d 个账户）：\n", len(accounts))
+		for _, a := range accounts {
+			text += fmt.Sprintf("• %s\n", a)
+		}
+	}
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, a := range accounts {
+		btn := tgbotapi.NewInlineKeyboardButtonData(a+" ✕", "fav:rm:"+a)
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+	}
+	addBtn := tgbotapi.NewInlineKeyboardButtonData("➕ 添加账户", "fav:add")
+	rows = append(rows, []tgbotapi.InlineKeyboardButton{addBtn})
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送常用账户列表失败: %v", err)
+	}
+}
+
+// handleFavoriteCallback 处理 fav: 前缀的回调。
+func (tb *TelegramBot) handleFavoriteCallback(callback *tgbotapi.CallbackQuery) {
+	if !tb.isAdminUser(callback.From.ID) {
+		tb.answerCallback(callback.ID, "❌ 仅管理员可操作")
+		return
+	}
+
+	data := callback.Data
+	switch {
+	case strings.HasPrefix(data, "fav:rm:"):
+		account := strings.TrimPrefix(data, "fav:rm:")
+		tb.answerCallback(callback.ID, fmt.Sprintf("✅ 已移除 @%s", account))
+		if err := tb.removeFavoriteAccount(account); err != nil {
+			tb.sendMessage(callback.From.ID, fmt.Sprintf("❌ 移除失败: %v", err))
+			return
+		}
+		chatID := callback.From.ID
+		if callback.Message != nil {
+			chatID = callback.Message.Chat.ID
+		}
+		tb.sendFavoritesList(chatID)
+
+	case data == "fav:add":
+		tb.answerCallback(callback.ID, "请输入要添加的账户名")
+		userID := callback.From.ID
+		tb.statesMutex.Lock()
+		tb.userStates[userID] = &UserState{Step: "waiting_add_favorite", Timestamp: time.Now()}
+		tb.statesMutex.Unlock()
+
+		chatID := callback.From.ID
+		if callback.Message != nil {
+			chatID = callback.Message.Chat.ID
+		}
+		msg := tgbotapi.NewMessage(chatID, "📝 请输入要添加的 Instagram 用户名：")
+		msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true, Selective: true}
+		if _, err := tb.bot.Send(msg); err != nil {
+			log.Printf("发送添加账户提示失败: %v", err)
+		}
+	}
+}
+
+// addFavoriteAccount 添加账户到常用列表并持久化配置。
+func (tb *TelegramBot) addFavoriteAccount(account string) error {
+	tb.accountsMu.Lock()
+	defer tb.accountsMu.Unlock()
+
+	for _, a := range tb.favoriteAccounts {
+		if a == account {
+			return fmt.Errorf("账户 @%s 已在列表中", account)
+		}
+	}
+	tb.favoriteAccounts = append(tb.favoriteAccounts, account)
+	return tb.persistFavorites()
+}
+
+// removeFavoriteAccount 从常用列表移除账户并持久化配置。
+func (tb *TelegramBot) removeFavoriteAccount(account string) error {
+	tb.accountsMu.Lock()
+	defer tb.accountsMu.Unlock()
+
+	filtered := tb.favoriteAccounts[:0]
+	found := false
+	for _, a := range tb.favoriteAccounts {
+		if a == account {
+			found = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	if !found {
+		return fmt.Errorf("账户 @%s 不在列表中", account)
+	}
+	tb.favoriteAccounts = filtered
+	return tb.persistFavorites()
+}
+
+// persistFavorites 将当前 favoriteAccounts 写回 config.json。
+// 调用前必须已持有 accountsMu 写锁。
+func (tb *TelegramBot) persistFavorites() error {
+	config, err := LoadConfig(tb.configPath)
+	if err != nil {
+		return fmt.Errorf("读取配置失败: %w", err)
+	}
+	config.FavoriteAccounts = tb.favoriteAccounts
+	return SaveConfig(tb.configPath, config)
 }
