@@ -269,23 +269,3 @@ func execCommand(cmd string) error {
 
 	return nil
 }
-
-
-func extractShortcodeFromPath(files []string) string {
-	if len(files) == 0 {
-		return ""
-	}
-
-	// 从路径中提取 shortcode: downloads/cache/SHORTCODE/...
-	parts := strings.Split(files[0], string(filepath.Separator))
-	for i, part := range parts {
-		if part == "cache" && i+1 < len(parts) {
-			shortcode := parts[i+1]
-			// 验证 shortcode 不为空
-			if shortcode != "" && shortcode != "." && shortcode != ".." {
-				return shortcode
-			}
-		}
-	}
-	return ""
-}

@@ -38,14 +38,9 @@ type Config struct {
 // - `worker_addr` 为空时使用默认监听地址；
 // - `admin_user_ids` 未配置但 `allowed_user_ids` 有值时，自动回退为同一组 ID（兼容旧配置）。
 func LoadConfig(path string) (*Config, error) {
-	file, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
-	}
-
 	var config Config
-	if err := json.Unmarshal(file, &config); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+	if err := loadJSONFile(path, &config); err != nil {
+		return nil, fmt.Errorf("加载配置文件失败: %w", err)
 	}
 
 	if config.TelegramBotToken == "" || config.TelegramBotToken == "YOUR_BOT_TOKEN_HERE" {

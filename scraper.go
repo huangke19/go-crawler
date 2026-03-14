@@ -415,19 +415,6 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	return extractMediaFromJSON(shortcodeMedia)
 }
 
-// extractShortcode 从帖子 URL 中提取 shortcode。
-// URL 形态可能为 `/p/<shortcode>/` 或 `/reel/<shortcode>/`，这里只做最小假设提取。
-func extractShortcode(postURL string) string {
-	// URL 格式: https://www.instagram.com/xxx/p/SHORTCODE/ 或 /reel/SHORTCODE/
-	parts := strings.Split(postURL, "/")
-	for i, part := range parts {
-		if (part == "p" || part == "reel") && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-	return ""
-}
-
 // parseMediaData 从提取的数据中解析媒体信息
 // extractMediaFromJSON 从 GraphQL 返回的媒体 JSON 中提取媒体 URL。
 //

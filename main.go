@@ -249,7 +249,7 @@ func handleWorker() {
 }
 
 // handleCheckUpdate 检查指定用户是否有新帖子，并刷新帖子列表缓存。
-// 通过对比缓存中第 1 条 shortcode 与主页实际第 1 条来判断是否有新内容。
+// 核心逻辑委托给 RefreshPostsCache（scraper.go），此处仅负责 CLI 交互。
 func handleCheckUpdate() {
 	if len(os.Args) < 3 {
 		fmt.Println("用法: crawler check-update <username>")
@@ -276,59 +276,16 @@ func handleCheckUpdate() {
 		os.Exit(1)
 	}
 
-	// 读取缓存中的第 1 条 shortcode
-	var cachedFirstShortcode string
-	if postsCache, ok := GetPostsFromCache(username); ok && len(postsCache.Posts) > 0 {
-		cachedFirstShortcode = postsCache.Posts[0].Shortcode
-		fmt.Printf("缓存中第 1 条帖子: %s（共 %d 条）\n", cachedFirstShortcode, len(postsCache.Posts))
-	} else {
-		fmt.Println("缓存不存在，将创建新缓存")
-	}
-
-	// 访问主页获取实际第 1 条
-	fmt.Println("正在访问用户主页...")
-	if err := NavigateToUser(ctx, username); err != nil {
-		fmt.Printf("❌ 访问用户主页失败: %v\n", err)
-		os.Exit(1)
-	}
-
-	postLinks, err := GetAllPostLinks(ctx, 12)
+	fmt.Println("正在检查更新...")
+	needRefresh, totalPosts, err := RefreshPostsCache(ctx, username, 12)
 	if err != nil {
-		fmt.Printf("❌ 获取帖子列表失败: %v\n", err)
+		fmt.Printf("❌ 检查更新失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	if len(postLinks) == 0 {
-		fmt.Println("❌ 未找到任何帖子")
-		os.Exit(1)
-	}
-
-	actualFirstShortcode := extractShortcode(postLinks[0])
-	fmt.Printf("主页实际第 1 条帖子: %s（共获取 %d 条）\n\n", actualFirstShortcode, len(postLinks))
-
-	// 对比并更新缓存
-	if cachedFirstShortcode == "" || cachedFirstShortcode != actualFirstShortcode {
-		posts := []PostItem{}
-		for i, link := range postLinks {
-			sc := extractShortcode(link)
-			if sc != "" {
-				posts = append(posts, PostItem{
-					Index:     i + 1,
-					Shortcode: sc,
-				})
-			}
-		}
-		SavePostsToCache(username, &PostsCache{
-			Posts:     posts,
-			UpdatedAt: time.Now(),
-			ExpiresAt: time.Now().Add(24 * time.Hour),
-		})
-		if cachedFirstShortcode == "" {
-			fmt.Printf("✓ 已创建缓存（共 %d 条帖子）\n", len(posts))
-		} else {
-			fmt.Printf("✓ 检测到新帖子！已更新缓存（共 %d 条帖子）\n", len(posts))
-		}
+	if needRefresh {
+		fmt.Printf("✓ 检测到新帖子！已更新缓存（共 %d 条帖子）\n", totalPosts)
 	} else {
-		fmt.Println("✓ 已是最新，无新帖子")
+		fmt.Printf("✓ 已是最新，无新帖子（共 %d 条帖子）\n", totalPosts)
 	}
 }
