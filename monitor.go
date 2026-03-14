@@ -232,11 +232,14 @@ func (ws *WorkerServer) notifyNewPost(username, shortcode string, chatIDs []int6
 	for _, chatID := range chatIDs {
 		// 发送文字通知
 		sendTelegramMessage(token, chatID, textMsg)
+		log.Printf("监控：已发送文字通知 → chatID=%d @%s", chatID, username)
 
 		// 发送文件
 		for _, fp := range filePaths {
 			if err := sendTelegramFile(token, chatID, fp, caption); err != nil {
 				log.Printf("监控：发送文件失败 %s: %v", fp, err)
+			} else {
+				log.Printf("监控：已发送文件 → chatID=%d %s", chatID, fp)
 			}
 		}
 	}
