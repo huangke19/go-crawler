@@ -40,7 +40,7 @@
 
 | 文件 | 职责 | 关键函数 | 行数 |
 |------|------|---------|------|
-| **main.go** | CLI 参数解析与子命令分发 | `main()`, `handleLogin()`, `handleDownload()`, `handleBot()`, `handleWorker()` | ~220 |
+| **main.go** | CLI 参数解析与子命令分发 | `main()`, `handleLogin()`, `handleDownload()`, `handleCheckUpdate()`, `handleBot()`, `handleWorker()` | ~290 |
 | **auth.go** | 认证管理与会话持久化 | `LoadSession()`, `SaveSession()`, `SetCookies()`, `EnsureLoggedIn()`, `CreateBrowserContext()`, `CreateFastBrowserContext()` | ~230 |
 | **login.go** | 手动登录流程 | `ManualLogin()` | ~70 |
 | **scraper.go** | 页面爬取与媒体 URL 提取 | `NavigateToUser()`, `ScrollToLoadMore()`, `GetPostByIndex()`, `ExtractMediaURLs()`, `extractMediaFromJSON()` | ~480 |
@@ -89,9 +89,11 @@ go-crawler/
 - **命令**:
   - `./crawler login` - 手动登录
   - `./crawler <username> <post_index>` - 下载指定帖子
+  - `./crawler check-update <username>` / `./crawler cu <username>` - 检查并刷新帖子缓存
 - **流程**: 启动浏览器 → 验证登录 → 访问用户主页 → 定位帖子 → 提取媒体 → 下载
 - **关键函数**:
   - `main()`: 参数解析和流程控制
+  - `handleCheckUpdate()`: 检查并刷新用户帖子缓存（对比 shortcode，有新帖时更新 posts_cache）
 
 ### 2. auth.go (认证管理)
 - **职责**: 会话持久化、Cookie 管理、登录状态验证
@@ -443,6 +445,10 @@ GOOS=darwin GOARCH=arm64 go build -o crawler-mac-arm64
 # 下载测试
 ./crawler nike 1
 ./crawler instagram 5
+
+# 检查更新测试
+./crawler check-update nike
+./crawler cu instagram
 ```
 
 ## 注意事项

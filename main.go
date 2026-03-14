@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -57,6 +58,8 @@ func main() {
 		handleLogin()
 	case "download", "dl":
 		handleDownload()
+	case "check-update", "cu":
+		handleCheckUpdate()
 	case "bot":
 		handleBot()
 	case "worker":
@@ -83,6 +86,8 @@ func printUsage() {
 	fmt.Println("  crawler login                           登录 Instagram 账户")
 	fmt.Println("  crawler download <username> <index>     下载指定用户的第 N 个帖子")
 	fmt.Println("  crawler dl <username> <index>           download 的简写")
+	fmt.Println("  crawler check-update <username>         检查并刷新用户帖子缓存")
+	fmt.Println("  crawler cu <username>                   check-update 的简写")
 	fmt.Println("  crawler bot                             启动 Telegram Bot 服务")
 	fmt.Println("  crawler worker                          启动 Worker 服务（供 Bot 调用）")
 	fmt.Println("  crawler setup-bot                       显示 Telegram Bot 命令设置指南")
@@ -93,6 +98,8 @@ func printUsage() {
 	fmt.Println("  crawler login                           # 首次使用需要登录")
 	fmt.Println("  crawler download nike 1                 # 下载 @nike 的第 1 个帖子")
 	fmt.Println("  crawler dl instagram 5                  # 下载 @instagram 的第 5 个帖子")
+	fmt.Println("  crawler check-update nike               # 检查 @nike 是否有新帖子")
+	fmt.Println("  crawler cu instagram                    # check-update 简写")
 	fmt.Println("  crawler bot                             # 启动 Telegram Bot")
 	fmt.Println("  crawler worker                          # 启动 Worker 服务")
 	fmt.Println("  crawler setup-bot                       # 设置 Bot 命令菜单")
@@ -238,5 +245,90 @@ func handleWorker() {
 	if err := RunWorker(); err != nil {
 		fmt.Printf("❌ Worker 运行失败: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// handleCheckUpdate 检查指定用户是否有新帖子，并刷新帖子列表缓存。
+// 通过对比缓存中第 1 条 shortcode 与主页实际第 1 条来判断是否有新内容。
+func handleCheckUpdate() {
+	if len(os.Args) < 3 {
+		fmt.Println("用法: crawler check-update <username>")
+		fmt.Println("      crawler cu <username>")
+		os.Exit(1)
+	}
+
+	username := strings.TrimSpace(os.Args[2])
+	if username == "" {
+		fmt.Println("❌ 错误: username 不能为空")
+		os.Exit(1)
+	}
+
+	fmt.Printf("=== 检查更新: @%s ===\n\n", username)
+
+	fmt.Println("正在启动浏览器...")
+	ctx, cancel := CreateFastBrowserContext()
+	defer cancel()
+
+	fmt.Println("正在验证登录状态...")
+	if err := EnsureLoggedIn(ctx); err != nil {
+		fmt.Printf("❌ 登录失败: %v\n", err)
+		fmt.Println("\n提示: 请先运行 'crawler login' 登录账户")
+		os.Exit(1)
+	}
+
+	// 读取缓存中的第 1 条 shortcode
+	var cachedFirstShortcode string
+	if postsCache, ok := GetPostsFromCache(username); ok && len(postsCache.Posts) > 0 {
+		cachedFirstShortcode = postsCache.Posts[0].Shortcode
+		fmt.Printf("缓存中第 1 条帖子: %s（共 %d 条）\n", cachedFirstShortcode, len(postsCache.Posts))
+	} else {
+		fmt.Println("缓存不存在，将创建新缓存")
+	}
+
+	// 访问主页获取实际第 1 条
+	fmt.Println("正在访问用户主页...")
+	if err := NavigateToUser(ctx, username); err != nil {
+		fmt.Printf("❌ 访问用户主页失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	postLinks, err := GetAllPostLinks(ctx, 12)
+	if err != nil {
+		fmt.Printf("❌ 获取帖子列表失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(postLinks) == 0 {
+		fmt.Println("❌ 未找到任何帖子")
+		os.Exit(1)
+	}
+
+	actualFirstShortcode := extractShortcode(postLinks[0])
+	fmt.Printf("主页实际第 1 条帖子: %s（共获取 %d 条）\n\n", actualFirstShortcode, len(postLinks))
+
+	// 对比并更新缓存
+	if cachedFirstShortcode == "" || cachedFirstShortcode != actualFirstShortcode {
+		posts := []PostItem{}
+		for i, link := range postLinks {
+			sc := extractShortcode(link)
+			if sc != "" {
+				posts = append(posts, PostItem{
+					Index:     i + 1,
+					Shortcode: sc,
+				})
+			}
+		}
+		SavePostsToCache(username, &PostsCache{
+			Posts:     posts,
+			UpdatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+		})
+		if cachedFirstShortcode == "" {
+			fmt.Printf("✓ 已创建缓存（共 %d 条帖子）\n", len(posts))
+		} else {
+			fmt.Printf("✓ 检测到新帖子！已更新缓存（共 %d 条帖子）\n", len(posts))
+		}
+	} else {
+		fmt.Println("✓ 已是最新，无新帖子")
 	}
 }
