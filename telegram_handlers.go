@@ -47,6 +47,8 @@ func (tb *TelegramClient) handleCommand(message *tgbotapi.Message) {
 		tb.handleFavoritesCommand(message)
 	case "status":
 		tb.handleStatus(message)
+	case "monitor":
+		tb.handleMonitor(message)
 	default:
 		tb.sendMessage(message.Chat.ID, fmt.Sprintf("❌ 未知命令: /%s\n使用 /help 查看帮助", command))
 	}
@@ -67,6 +69,7 @@ func (tb *TelegramClient) handleHelp(message *tgbotapi.Message) {
 	if tb.isAdminUser(message.From.ID) {
 		text += "/control - 控制 worker 启动/停止/重启\n"
 		text += "/favorites - 管理常用账户列表\n"
+		text += "/monitor - 查看监控账户状态\n"
 	}
 	text += "/help - 显示帮助信息\n\n"
 	text += "💡 使用方式:\n\n"
@@ -620,6 +623,42 @@ func (tb *TelegramClient) handleFavoritesCommand(message *tgbotapi.Message) {
 		return
 	}
 	tb.sendFavoritesList(message.Chat.ID)
+}
+
+// handleMonitor 显示监控账户列表及上次检测状态，仅 Admin 可用。
+func (tb *TelegramClient) handleMonitor(message *tgbotapi.Message) {
+	if !tb.isAdminUser(message.From.ID) {
+		tb.sendMessage(message.Chat.ID, "❌ 仅管理员可使用 /monitor")
+		return
+	}
+
+	config, err := LoadConfig(tb.configPath)
+	if err != nil || len(config.MonitorAccounts) == 0 {
+		tb.sendMessage(message.Chat.ID,
+			"📡 监控状态\n\n未配置监控账户，在 config.json 中添加 monitor_accounts 字段即可启用。")
+		return
+	}
+
+	// 读取监控状态
+	monitorStateMu.Lock()
+	states, _ := loadMonitorStates()
+	monitorStateMu.Unlock()
+
+	text := fmt.Sprintf("📡 监控状态（每 %d 分钟检查一次）\n\n", config.MonitorIntervalMin)
+	for _, username := range config.MonitorAccounts {
+		state, ok := states[username]
+		if !ok || state.LastShortcode == "" {
+			text += fmt.Sprintf("• @%s — 尚未检测\n", username)
+			continue
+		}
+		lastCheck := state.LastCheck
+		if t, err := time.Parse(time.RFC3339, state.LastCheck); err == nil {
+			lastCheck = t.Format("01-02 15:04")
+		}
+		text += fmt.Sprintf("• @%s\n  最新: %s\n  检测: %s\n", username, state.LastShortcode, lastCheck)
+	}
+
+	tb.sendMessage(message.Chat.ID, text)
 }
 
 // sendFavoritesList 发送常用账户列表及操作按钮。

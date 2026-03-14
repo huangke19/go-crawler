@@ -51,6 +51,7 @@
 | **worker.go** | Worker HTTP 服务 | `NewWorkerServer()`, `RunWorker()`, `handleDownload()`, `handleCheckUpdate()` | ~400+ |
 | **daemon.go** | 守护进程管理 | `StartServiceDaemon()`, `StopServiceDaemon()`, `RestartServiceDaemon()`, `GetServiceRuntime()` | ~377 |
 | **gobot.go** | 守护进程 CLI 工具 | `main()`, `printGobotUsage()`, `showLogs()` | ~118 |
+| **monitor.go** | Instagram 账户监控 | `startMonitorLoop()`, `checkAllAccounts()`, `checkAccount()`, `notifyNewPost()`, `sendTelegramFile()` | ~230 |
 
 ### 目录结构
 
@@ -68,6 +69,7 @@ go-crawler/
 ├── setup_bot.go         # Bot 命令菜单设置
 ├── daemon.go            # 守护进程管理：启动/停止/重启逻辑
 ├── gobot.go             # 守护进程 CLI 工具入口
+├── monitor.go           # Instagram 账户监控：轮询、检测新帖、自动下载推送
 ├── build.sh             # 编译脚本
 ├── go.mod               # 模块定义
 ├── .instagram_session.json  # 会话文件（Cookie 存储，不提交到 Git）

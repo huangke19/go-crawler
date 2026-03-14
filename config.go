@@ -26,11 +26,13 @@ import (
 )
 
 type Config struct {
-	TelegramBotToken string   `json:"telegram_bot_token"`
-	AllowedUserIDs   []int64  `json:"allowed_user_ids"`
-	AdminUserIDs     []int64  `json:"admin_user_ids"`
-	FavoriteAccounts []string `json:"favorite_accounts"`
-	WorkerAddr       string   `json:"worker_addr"`
+	TelegramBotToken  string   `json:"telegram_bot_token"`
+	AllowedUserIDs    []int64  `json:"allowed_user_ids"`
+	AdminUserIDs      []int64  `json:"admin_user_ids"`
+	FavoriteAccounts  []string `json:"favorite_accounts"`
+	WorkerAddr        string   `json:"worker_addr"`
+	MonitorAccounts   []string `json:"monitor_accounts"`    // 监控的账户列表
+	MonitorIntervalMin int     `json:"monitor_interval_min"` // 轮询间隔（分钟），默认 30
 }
 
 // LoadConfig 从指定路径读取 `config.json` 并做必要的兼容与默认值填充：
@@ -53,6 +55,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	if len(config.AdminUserIDs) == 0 && len(config.AllowedUserIDs) > 0 {
 		config.AdminUserIDs = append([]int64(nil), config.AllowedUserIDs...)
+	}
+
+	if config.MonitorIntervalMin <= 0 {
+		config.MonitorIntervalMin = defaultMonitorIntervalMin
 	}
 
 	return &config, nil

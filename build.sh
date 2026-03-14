@@ -11,6 +11,10 @@ echo "编译 gobot..."
 go build -tags gobot -o gobot
 
 echo ""
+echo "更新 Bot 命令菜单..."
+./crawler setup-bot
+
+echo ""
 echo "重启 gobot..."
 gobot restart
 echo "重启 gobot worker..."

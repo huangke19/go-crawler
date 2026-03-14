@@ -51,3 +51,9 @@ const (
 	maxConcurrentDownloads = 10
 	maxJSONResponseSize    = 10 << 20 // 10MB
 )
+
+// 监控
+const (
+	monitorStateFile         = "cache/monitor_state.json"
+	defaultMonitorIntervalMin = 30
+)

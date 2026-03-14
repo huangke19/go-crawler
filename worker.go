@@ -78,6 +78,7 @@ const (
 // - Worker 负责"耗时且可能阻塞"的抓取与下载逻辑；Bot 只做交互与文件上传。
 // - Worker 复用一个无头浏览器实例（避免每个请求都启动 Chrome）；
 // - 通过 activeReqs 跟踪活跃请求，实现优雅关闭（尽量不半途打断下载）。
+// - stopCh 用于通知监控 goroutine 退出。
 type WorkerServer struct {
 	server        *http.Server
 	config        *Config
@@ -85,6 +86,7 @@ type WorkerServer struct {
 	browserCancel context.CancelFunc
 	browserMu     sync.Mutex
 	activeReqs    sync.WaitGroup // 跟踪活跃请求
+	stopCh        chan struct{}   // 关闭信号，通知监控 goroutine 退出
 }
 
 // WorkerDownloadRequest 是 Bot/CLI 调用 Worker 的下载请求体。
@@ -125,7 +127,9 @@ func getWorkerListenAddr() string {
 // - /check-update：检查主页是否有更新并刷新帖子列表缓存
 func NewWorkerServer() *WorkerServer {
 	mux := http.NewServeMux()
-	ws := &WorkerServer{}
+	ws := &WorkerServer{
+		stopCh: make(chan struct{}),
+	}
 
 	// 尝试加载配置（用于 Cookie 失效通知）
 	if cfg, err := LoadConfig("config.json"); err == nil {
@@ -148,8 +152,10 @@ func NewWorkerServer() *WorkerServer {
 }
 
 // Start 启动 HTTP 服务（阻塞）。
+// 服务启动后同时启动监控 goroutine。
 func (ws *WorkerServer) Start() error {
 	log.Printf("Worker 服务启动: http://%s", ws.server.Addr)
+	ws.startMonitorLoop()
 	if err := ws.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -160,6 +166,14 @@ func (ws *WorkerServer) Start() error {
 // - 最多等待 30 秒让活跃请求完成\n+// - 关闭复用的浏览器上下文\n+// - 关闭 HTTP server
 func (ws *WorkerServer) Shutdown(ctx context.Context) error {
 	log.Println("开始优雅关闭 Worker...")
+
+	// 停止监控 goroutine
+	select {
+	case <-ws.stopCh:
+		// 已经关闭，忽略
+	default:
+		close(ws.stopCh)
+	}
 
 	// 等待所有活跃请求完成（最多等待 30 秒）
 	done := make(chan struct{})
