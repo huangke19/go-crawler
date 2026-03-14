@@ -48,7 +48,7 @@
 | **cache.go** | 三层缓存系统 | `LoadMediaCache()`, `LoadPostsCache()`, `LoadFilesCache()`, `GetDownloadHistory()` | ~370 |
 | **config.go** | 配置管理 | `LoadConfig()`, `SaveConfig()`, `GetWorkerAddr()`, `GetWorkerBaseURL()` | ~85 |
 | **bot.go** | Telegram Bot 实现 | `NewTelegramBot()`, `Start()`, `handleCommand()`, `handleCallback()`, `handleFavoritesCommand()`, `sendFavoritesList()`, `addFavoriteAccount()`, `removeFavoriteAccount()` | ~600+ |
-| **worker.go** | Worker HTTP 服务 | `NewWorkerServer()`, `RunWorker()`, `handleDownload()`, `handleCheckUpdate()` | ~400+ |
+| **worker.go** | Worker HTTP 服务 | `NewWorkerServer()`, `RunWorker()`, `handleDownload()`, `handleCheckUpdate()`, `startMonitorLoop()` | ~400+ |
 | **daemon.go** | 守护进程管理 | `StartServiceDaemon()`, `StopServiceDaemon()`, `RestartServiceDaemon()`, `GetServiceRuntime()` | ~377 |
 | **gobot.go** | 守护进程 CLI 工具 | `main()`, `printGobotUsage()`, `showLogs()` | ~118 |
 | **monitor.go** | Instagram 账户监控 | `startMonitorLoop()`, `checkAllAccounts()`, `checkAccount()`, `notifyNewPost()`, `sendTelegramFile()` | ~230 |
@@ -193,15 +193,17 @@ go-crawler/
 - **关键函数**:
   - `NewTelegramBot(token, allowedUserIDs, favoriteAccounts)` - 创建 Bot 实例
   - `Start()` - 启动 Bot，监听消息
-  - `handleCommand(message)` - 处理命令（/start, /help, /download, /status, /favorites）
+  - `handleCommand(message)` - 处理命令（/start, /help, /download, /status, /favorites, /monitor）
   - `handleCallback(callback)` - 处理按钮点击
   - `downloadPost(username, postIndex)` - 执行下载任务
   - `sendFile(chatID, filePath)` - 上传文件到 Telegram
+  - `handleStatus(message)` - 状态查看；Admin 额外显示 worker 控制按钮
   - `handleFavoritesCommand(message)` - /favorites 入口，仅 Admin
   - `sendFavoritesList(chatID)` - 发送账户列表 + fav: 操作按钮
   - `handleFavoriteCallback(callback)` - 处理 fav:add / fav:rm: 回调
   - `addFavoriteAccount(account)` - 加写锁、去重、追加、写回 config.json
   - `removeFavoriteAccount(account)` - 加写锁、过滤、写回 config.json
+  - `handleMonitor(message)` - /monitor 入口，仅 Admin，显示监控账户状态
 
 ### 7. daemon.go (守护进程管理)
 - **职责**: 后台进程管理、PID 管理、日志记录
@@ -301,6 +303,18 @@ go-crawler/
    - 用户选择账户后显示帖子序号按钮
    - 用户选择序号后执行下载
    - 下载完成后上传文件到 Telegram
+5. 对于 `/status` 命令：
+   - 普通用户：显示 Bot 状态、worker 运行状态
+   - Admin：额外显示 worker 启动/停止/重启控制按钮
+
+### 监控流程
+1. Worker 启动时自动调用 `startMonitorLoop()`
+2. 立即执行一次全量检测，之后按 `monitor_interval_min` 定时轮询
+3. 每个账户：`NavigateToUser()` + `GetPostByIndex(ctx, 1)` 获取最新帖子 shortcode
+4. 与 `cache/monitor_state.json` 中的上次 shortcode 对比
+5. 首次运行（LastShortcode 为空）→ 仅初始化状态，不通知
+6. 检测到新帖 → `downloadByShortcode()` 下载 → `notifyNewPost()` 推送文件到 Telegram
+7. Worker 关闭时通过 `stopCh` 通知监控 goroutine 优雅退出
 
 ## 常见开发任务
 
@@ -313,20 +327,22 @@ go-crawler/
 | 修改爬取逻辑 | `scraper.go` | `NavigateToUser()`, `ExtractMediaURLs()` | 页面访问、媒体提取 |
 | 修改下载逻辑 | `downloader.go` | `DownloadMedia()`, `downloadConcurrently()` | 文件下载、并发控制 |
 | 修改缓存策略 | `cache.go` | `LoadMediaCache()`, `GetDownloadHistory()` | 三层缓存管理 |
-| 添加 Bot 命令 | `bot.go` | `handleCommand()` | Telegram 命令处理 |
+| 添加 Bot 命令 | `telegram_handlers.go` | `handleCommand()` | Telegram 命令处理 |
 | 添加 Worker 接口 | `worker.go` | `NewWorkerServer()` | HTTP 路由注册 |
 | 修改配置项 | `config.go` | `Config` 结构体 | 配置字段定义 |
 | 修改守护进程 | `daemon.go` | `StartServiceDaemon()` | 后台进程管理 |
+| 修改监控逻辑 | `monitor.go` | `checkAccount()`, `notifyNewPost()` | 检测与通知 |
+| 更新 Bot 命令菜单 | `setup_telegram_bot.go` | `botCommands`, `setMyCommands()` | 修改后执行 `./crawler setup-bot` |
 
 ### 常见修改位置
 
 #### 添加新的 CLI 命令
-**位置**: `main.go` 的 `main()` 函数（第 31-50 行）
+**位置**: `main.go` 的 `main()` 函数
 ```go
 switch command {
 case "login":
     handleLogin()
-case "download", "dl":
+case "download":
     handleDownload()
 // 在这里添加新命令
 case "mynewcmd":
