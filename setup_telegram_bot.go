@@ -20,9 +20,7 @@ var botCommands = []botCommand{
 	{"start", "开始使用"},
 	{"help", "查看帮助信息"},
 	{"download", "下载帖子（按钮交互）"},
-	{"dl", "download 的简写"},
-	{"status", "查看 bot 与 worker 状态"},
-	{"control", "管理员控制 worker 启停"},
+	{"status", "查看状态与 worker 控制（管理员含控制按钮）"},
 	{"favorites", "管理常用账户列表，仅管理员"},
 	{"monitor", "查看监控账户状态，仅管理员"},
 }

@@ -39,10 +39,8 @@ func (tb *TelegramClient) handleCommand(message *tgbotapi.Message) {
 		tb.handleStart(message)
 	case "help":
 		tb.handleHelp(message)
-	case "download", "dl":
+	case "download":
 		tb.handleDownload(message, args)
-	case "control":
-		tb.handleControl(message)
 	case "favorites", "fav":
 		tb.handleFavoritesCommand(message)
 	case "status":
@@ -64,12 +62,13 @@ func (tb *TelegramClient) handleStart(message *tgbotapi.Message) {
 func (tb *TelegramClient) handleHelp(message *tgbotapi.Message) {
 	text := "📖 可用命令:\n\n"
 	text += "/download - 下载指定帖子（按钮交互）\n"
-	text += "/dl - download 的简写\n"
-	text += "/status - 查看 bot 状态\n"
+	text += "/status - 查看状态"
 	if tb.isAdminUser(message.From.ID) {
-		text += "/control - 控制 worker 启动/停止/重启\n"
+		text += "与 worker 控制\n"
 		text += "/favorites - 管理常用账户列表\n"
 		text += "/monitor - 查看监控账户状态\n"
+	} else {
+		text += "\n"
 	}
 	text += "/help - 显示帮助信息\n\n"
 	text += "💡 使用方式:\n\n"
@@ -96,21 +95,19 @@ func (tb *TelegramClient) handleStatus(message *tgbotapi.Message) {
 	}
 
 	text += fmt.Sprintf("当前时间: %s", time.Now().Format("2006-01-02 15:04:05"))
-	tb.sendMessage(message.Chat.ID, text)
-}
 
-func (tb *TelegramClient) handleControl(message *tgbotapi.Message) {
-	if !tb.isAdminUser(message.From.ID) {
-		tb.sendMessage(message.Chat.ID, "❌ 仅管理员可使用 /control")
+	// 管理员额外显示 worker 控制按钮
+	if tb.isAdminUser(message.From.ID) {
+		text += "\n\n🎛️ Worker 控制:"
+		msg := tgbotapi.NewMessage(message.Chat.ID, text)
+		msg.ReplyMarkup = tb.workerControlKeyboard()
+		if _, err := tb.bot.Send(msg); err != nil {
+			log.Printf("发送状态失败: %v", err)
+		}
 		return
 	}
 
-	text := "🎛️ Worker 控制面板\n请选择操作:"
-	msg := tgbotapi.NewMessage(message.Chat.ID, text)
-	msg.ReplyMarkup = tb.workerControlKeyboard()
-	if _, err := tb.bot.Send(msg); err != nil {
-		log.Printf("发送控制面板失败: %v", err)
-	}
+	tb.sendMessage(message.Chat.ID, text)
 }
 
 func (tb *TelegramClient) handleDownload(message *tgbotapi.Message, args []string) {
