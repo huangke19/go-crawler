@@ -513,7 +513,7 @@ func (tb *TelegramClient) handleMessage(message *tgbotapi.Message) {
 		return
 	}
 
-	if time.Since(state.Timestamp) > 5*time.Minute {
+	if time.Since(state.Timestamp) > stateExpiration {
 		tb.statesMutex.Lock()
 		delete(tb.userStates, userID)
 		tb.statesMutex.Unlock()

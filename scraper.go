@@ -53,7 +53,7 @@ import (
 // - 主页访问用于"按时间线序号"定位帖子链接（第 1 条=最新）。
 // - 实际媒体 URL（图片/视频）不从主页 HTML 抓取，而是后续通过 GraphQL 接口获取。
 func NavigateToUser(ctx context.Context, username string) error {
-	url := fmt.Sprintf("https://www.instagram.com/%s/", username)
+	url := fmt.Sprintf(instagramBaseURL+"/%s/", username)
 	fmt.Printf("正在访问 @%s 的主页...\n", username)
 
 	err := chromedp.Run(ctx,
@@ -72,7 +72,7 @@ func NavigateToUser(ctx context.Context, username string) error {
 		}),
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
-		chromedp.Sleep(2*time.Second), // 增加等待时间，确保初始内容加载
+		chromedp.Sleep(pageLoadWait), // 增加等待时间，确保初始内容加载
 	)
 
 	if err != nil {
@@ -176,7 +176,7 @@ func GetPostByIndex(ctx context.Context, index int) (string, error) {
 		if exists && (strings.Contains(href, "/p/") || strings.Contains(href, "/reel/")) {
 			// 转换为完整 URL
 			if strings.HasPrefix(href, "/") {
-				href = "https://www.instagram.com" + href
+				href = instagramBaseURL + href
 			}
 			postLinks = append(postLinks, href)
 		}
@@ -248,7 +248,7 @@ func GetAllPostLinks(ctx context.Context, minCount int) ([]string, error) {
 		if exists && (strings.Contains(href, "/p/") || strings.Contains(href, "/reel/")) {
 			// 转换为完整 URL
 			if strings.HasPrefix(href, "/") {
-				href = "https://www.instagram.com" + href
+				href = instagramBaseURL + href
 			}
 			postLinks = append(postLinks, href)
 		}
@@ -309,7 +309,7 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 
 	// 构造 GraphQL POST 请求（参考 instaloader 的调用方式）。
 	// doc_id 可能随 Instagram 更新而变化；当出现"接口返回结构变化/无数据"时，这里通常是首要排查点。
-	docID := "8845758582119845"
+	docID := graphQLDocID
 	variables := fmt.Sprintf(`{"shortcode":"%s"}`, shortcode)
 
 	// 构造表单数据（使用 url.Values 正确编码）
@@ -318,7 +318,7 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	formData.Set("doc_id", docID)
 	formData.Set("server_timestamps", "true")
 
-	apiURL := "https://www.instagram.com/graphql/query"
+	apiURL := instagramGraphQL
 
 	// 创建 HTTP POST 请求
 	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData.Encode()))
@@ -332,7 +332,7 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("X-IG-App-ID", "936619743392459")
 	req.Header.Set("Referer", postURL)
-	req.Header.Set("Origin", "https://www.instagram.com")
+	req.Header.Set("Origin", instagramBaseURL)
 	req.Header.Set("Accept", "*/*")
 
 	// 添加 cookies 并提取 csrftoken
@@ -385,7 +385,7 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 	}
 
 	// 解析 JSON 响应（限制最大 10MB，防止内存耗尽）
-	limitedReader := io.LimitReader(resp.Body, 10*1024*1024)
+	limitedReader := io.LimitReader(resp.Body, maxJSONResponseSize)
 	var result map[string]interface{}
 	if err := json.NewDecoder(limitedReader).Decode(&result); err != nil {
 		return nil, fmt.Errorf("解析 JSON 失败: %v", err)
@@ -490,6 +490,59 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 	}
 
 	return nil, fmt.Errorf("未找到任何媒体 URL")
+}
+
+// RefreshPostsCache 检查用户帖子列表是否有更新，如有则刷新缓存。
+// 参数 ctx 必须是已登录的浏览器上下文，minPosts 指定最少加载的帖子数量。
+// 返回 (是否有更新, 帖子总数, error)。
+func RefreshPostsCache(ctx context.Context, username string, minPosts int) (bool, int, error) {
+	// 获取缓存中的第 1 条 shortcode
+	var cachedFirstShortcode string
+	if postsCache, ok := GetPostsFromCache(username); ok && len(postsCache.Posts) > 0 {
+		cachedFirstShortcode = postsCache.Posts[0].Shortcode
+	}
+
+	// 访问用户主页
+	if err := NavigateToUser(ctx, username); err != nil {
+		return false, 0, fmt.Errorf("访问用户主页失败: %w", err)
+	}
+
+	// 获取帖子链接
+	postLinks, err := GetAllPostLinks(ctx, minPosts)
+	if err != nil {
+		return false, 0, fmt.Errorf("获取帖子列表失败: %w", err)
+	}
+
+	if len(postLinks) == 0 {
+		return false, 0, fmt.Errorf("未找到任何帖子")
+	}
+
+	// 提取 shortcode 并对比
+	actualFirstShortcode := extractShortcode(postLinks[0])
+
+	if cachedFirstShortcode != "" && cachedFirstShortcode == actualFirstShortcode {
+		return false, len(postLinks), nil
+	}
+
+	// 有更新或无缓存，构建并保存新缓存
+	posts := []PostItem{}
+	for i, link := range postLinks {
+		sc := extractShortcode(link)
+		if sc != "" {
+			posts = append(posts, PostItem{
+				Index:     i + 1,
+				Shortcode: sc,
+			})
+		}
+	}
+
+	SavePostsToCache(username, &PostsCache{
+		Posts:     posts,
+		UpdatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(postsCacheExpiry),
+	})
+
+	return true, len(posts), nil
 }
 
 // extractImageURL 从媒体数据中提取图片 URL（优先选择较高质量）。

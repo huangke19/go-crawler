@@ -51,7 +51,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -151,16 +150,11 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 	}
 
 	path := filepath.Join(cacheDir, "media_cache.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if err := loadJSONFile(path, &mediaCacheMap); err != nil {
 		if os.IsNotExist(err) {
 			mediaCacheMap = make(map[string]*MediaCache)
 			return mediaCacheMap, nil
 		}
-		return nil, err
-	}
-
-	if err := json.Unmarshal(data, &mediaCacheMap); err != nil {
 		return nil, err
 	}
 
@@ -175,13 +169,8 @@ func SaveMediaCache(cache map[string]*MediaCache) error {
 
 	mediaCacheMap = cache
 
-	data, err := json.MarshalIndent(cache, "", "  ")
-	if err != nil {
-		return err
-	}
-
 	path := filepath.Join(cacheDir, "media_cache.json")
-	return os.WriteFile(path, data, 0644)
+	return saveJSONFile(path, cache, 0644)
 }
 
 // LoadPostsCache 加载帖子列表缓存。
@@ -198,16 +187,11 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 	defer postsCacheMu.Unlock()
 
 	path := filepath.Join(cacheDir, "posts_cache.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if err := loadJSONFile(path, &postsCacheMap); err != nil {
 		if os.IsNotExist(err) {
 			postsCacheMap = make(map[string]*PostsCache)
 			return postsCacheMap, nil
 		}
-		return nil, err
-	}
-
-	if err := json.Unmarshal(data, &postsCacheMap); err != nil {
 		return nil, err
 	}
 
@@ -221,13 +205,8 @@ func SavePostsCache(cache map[string]*PostsCache) error {
 
 	postsCacheMap = cache
 
-	data, err := json.MarshalIndent(cache, "", "  ")
-	if err != nil {
-		return err
-	}
-
 	path := filepath.Join(cacheDir, "posts_cache.json")
-	return os.WriteFile(path, data, 0644)
+	return saveJSONFile(path, cache, 0644)
 }
 
 // LoadFilesCache 加载文件缓存（shortcode -> 本地文件路径）。
@@ -244,16 +223,11 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 	defer filesCacheMu.Unlock()
 
 	path := filepath.Join(cacheDir, "files_cache.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if err := loadJSONFile(path, &filesCacheMap); err != nil {
 		if os.IsNotExist(err) {
 			filesCacheMap = make(map[string]*FilesCache)
 			return filesCacheMap, nil
 		}
-		return nil, err
-	}
-
-	if err := json.Unmarshal(data, &filesCacheMap); err != nil {
 		return nil, err
 	}
 
@@ -267,13 +241,8 @@ func SaveFilesCache(cache map[string]*FilesCache) error {
 
 	filesCacheMap = cache
 
-	data, err := json.MarshalIndent(cache, "", "  ")
-	if err != nil {
-		return err
-	}
-
 	path := filepath.Join(cacheDir, "files_cache.json")
-	return os.WriteFile(path, data, 0644)
+	return saveJSONFile(path, cache, 0644)
 }
 
 // GetMediaFromCache 从媒体缓存获取媒体信息。
@@ -358,7 +327,7 @@ func SaveFilesToCache(shortcode string, files *FilesCache) error {
 func GetDownloadHistory(limit int) []*FilesCache {
 	// 检查内存缓存（1分钟有效期）
 	historyCacheMu.RLock()
-	if historyCache != nil && time.Since(historyCacheTime) < 1*time.Minute {
+	if historyCache != nil && time.Since(historyCacheTime) < historyCacheTTL {
 		cached := historyCache
 		historyCacheMu.RUnlock()
 		if limit > 0 && len(cached) > limit {

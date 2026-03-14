@@ -40,18 +40,17 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // 全局 HTTP 客户端，复用连接
 var httpClient = &http.Client{
-	Timeout: 30 * time.Second,
+	Timeout: httpDownloadTimeout,
 	Transport: &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        20,
 		MaxIdleConnsPerHost: 5,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
+		IdleConnTimeout:     httpIdleConnTimeout,
+		TLSHandshakeTimeout: tlsHandshakeTimeout,
 	},
 }
 
@@ -183,7 +182,7 @@ func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) 
 	}
 
 	// 并发下载（提升并发数到 10）
-	if err := downloadConcurrently(tasks, 10, 1); err != nil {
+	if err := downloadConcurrently(tasks, maxConcurrentDownloads, 1); err != nil {
 		return nil, err
 	}
 
@@ -231,7 +230,7 @@ func downloadMediaByShortcode(shortcode string, mediaInfo *MediaInfo) ([]string,
 	}
 
 	// 并发下载
-	if err := downloadConcurrently(tasks, 10, 1); err != nil {
+	if err := downloadConcurrently(tasks, maxConcurrentDownloads, 1); err != nil {
 		return nil, err
 	}
 

@@ -112,16 +112,8 @@ func getWorkerListenAddr() string {
 		return value
 	}
 
-	type workerConfig struct {
-		WorkerAddr string `json:"worker_addr"`
-	}
-	if data, err := os.ReadFile("config.json"); err == nil {
-		var cfg workerConfig
-		if json.Unmarshal(data, &cfg) == nil {
-			if value := strings.TrimSpace(cfg.WorkerAddr); value != "" {
-				return value
-			}
-		}
+	if cfg, err := LoadConfig("config.json"); err == nil {
+		return cfg.GetWorkerAddr()
 	}
 
 	return defaultWorkerListenAddr
@@ -147,9 +139,9 @@ func NewWorkerServer() *WorkerServer {
 	ws.server = &http.Server{
 		Addr:              getWorkerListenAddr(),
 		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      10 * time.Minute,
+		ReadHeaderTimeout: workerReadHeaderTimeout,
+		ReadTimeout:       workerReadTimeout,
+		WriteTimeout:      workerWriteTimeout,
 	}
 
 	return ws
@@ -179,7 +171,7 @@ func (ws *WorkerServer) Shutdown(ctx context.Context) error {
 	select {
 	case <-done:
 		log.Println("所有请求已完成")
-	case <-time.After(30 * time.Second):
+	case <-time.After(workerShutdownTimeout):
 		log.Println("⚠️  等待请求超时，强制关闭")
 	}
 
@@ -355,7 +347,7 @@ func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) 
 	} else {
 		// 3. 调用 GraphQL API 获取媒体URL
 		log.Printf("  缓存未命中，调用 GraphQL API...")
-		postURL := "https://www.instagram.com/p/" + shortcode + "/"
+		postURL := instagramBaseURL + "/p/" + shortcode + "/"
 		ctx, err := ws.getBrowser()
 		if err != nil {
 			return nil, fmt.Errorf("获取浏览器失败: %w", err)
@@ -456,7 +448,7 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 		SavePostsToCache(username, &PostsCache{
 			Posts:     posts,
 			UpdatedAt: time.Now(),
-			ExpiresAt: time.Now().Add(24 * time.Hour),
+			ExpiresAt: time.Now().Add(postsCacheExpiry),
 		})
 		log.Printf("  ✓ 已保存帖子列表到缓存（共 %d 条，24小时有效）", len(posts))
 
@@ -509,7 +501,7 @@ func RunWorker() error {
 		return fmt.Errorf("worker 服务异常退出: %w", err)
 	case sig := <-sigCh:
 		log.Printf("收到退出信号: %s", sig.String())
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), workerReadHeaderTimeout)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			return fmt.Errorf("worker 优雅退出失败: %w", err)
@@ -615,21 +607,11 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// checkCacheUpdate 检查缓存是否需要更新。\n+// 通过"缓存第 1 条 shortcode vs 实际主页第 1 条 shortcode"进行对比，快速判断是否有新帖子。
+// checkCacheUpdate 检查缓存是否需要更新。
+// 核心逻辑委托给 RefreshPostsCache（scraper.go），此处仅负责浏览器获取与日志输出。
 func (ws *WorkerServer) checkCacheUpdate(username string) (needRefresh bool, totalPosts int, err error) {
 	log.Printf("  检查 @%s 的缓存状态...", username)
 
-	// 1. 获取缓存中的第1条帖子 shortcode
-	var cachedFirstShortcode string
-	if postsCache, ok := GetPostsFromCache(username); ok {
-		if len(postsCache.Posts) > 0 {
-			cachedFirstShortcode = postsCache.Posts[0].Shortcode
-			log.Printf("  缓存中第1条帖子: %s (共 %d 条)", cachedFirstShortcode, len(postsCache.Posts))
-		}
-	}
-
-	// 2. 访问用户主页，获取实际的第1条帖子
-	log.Printf("  访问用户主页获取最新数据...")
 	ctx, err := ws.getBrowser()
 	if err != nil {
 		return false, 0, fmt.Errorf("获取浏览器失败: %w", err)
@@ -639,50 +621,16 @@ func (ws *WorkerServer) checkCacheUpdate(username string) (needRefresh bool, tot
 		return false, 0, fmt.Errorf("登录验证失败: %w", err)
 	}
 
-	if err := NavigateToUser(ctx, username); err != nil {
-		return false, 0, fmt.Errorf("访问用户主页失败: %w", err)
-	}
-
-	// 获取所有帖子链接（至少获取前12条）
-	postLinks, err := GetAllPostLinks(ctx, 12)
+	needRefresh, totalPosts, err = RefreshPostsCache(ctx, username, 12)
 	if err != nil {
-		return false, 0, fmt.Errorf("获取帖子列表失败: %w", err)
+		return false, 0, err
 	}
 
-	if len(postLinks) == 0 {
-		return false, 0, fmt.Errorf("未找到任何帖子")
+	if needRefresh {
+		log.Printf("  ✓ 检测到更新，已刷新缓存（共 %d 条）", totalPosts)
+	} else {
+		log.Printf("  ✓ 缓存已是最新（共 %d 条）", totalPosts)
 	}
 
-	// 提取第1条帖子的 shortcode
-	actualFirstShortcode := extractShortcode(postLinks[0])
-	log.Printf("  实际第1条帖子: %s (共 %d 条)", actualFirstShortcode, len(postLinks))
-
-	// 3. 对比 shortcode
-	if cachedFirstShortcode == "" || cachedFirstShortcode != actualFirstShortcode {
-		// 需要刷新缓存
-		log.Printf("  ✓ 检测到更新，刷新缓存...")
-		posts := []PostItem{}
-		for i, link := range postLinks {
-			sc := extractShortcode(link)
-			if sc != "" {
-				posts = append(posts, PostItem{
-					Index:     i + 1,
-					Shortcode: sc,
-				})
-			}
-		}
-
-		SavePostsToCache(username, &PostsCache{
-			Posts:     posts,
-			UpdatedAt: time.Now(),
-			ExpiresAt: time.Now().Add(24 * time.Hour),
-		})
-		log.Printf("  ✓ 已更新缓存（共 %d 条）", len(posts))
-
-		return true, len(posts), nil
-	}
-
-	// 无需刷新
-	log.Printf("  ✓ 缓存已是最新")
-	return false, len(postLinks), nil
+	return needRefresh, totalPosts, nil
 }

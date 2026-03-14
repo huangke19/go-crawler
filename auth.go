@@ -16,8 +16,10 @@
 // 关键函数：
 //   - LoadSession()：从文件加载 Cookie
 //   - SaveSession()：保存 Cookie 到文件（权限 0600，仅所有者可读写）
+//   - ExtractBrowserCookies()：从浏览器上下文中提取所有 Cookie
 //   - SetCookies()：将 Cookie 注入到浏览器上下文
 //   - EnsureLoggedIn()：验证登录状态，失败则返回错误
+//   - ManualLogin()：打开有头浏览器，让用户手动完成登录
 //   - CreateBrowserContext()：创建有头浏览器上下文（登录用）
 //   - CreateFastBrowserContext()：创建无头浏览器上下文（爬取用）
 //
@@ -27,9 +29,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -42,28 +42,17 @@ const sessionFile = ".instagram_session.json"
 // LoadSession 从 `.instagram_session.json` 加载浏览器 cookies。
 // 该文件包含敏感登录态信息，通常应在 `.gitignore` 中忽略，并确保本地权限为仅用户可读写。
 func LoadSession() ([]*Cookie, error) {
-	data, err := os.ReadFile(sessionFile)
-	if err != nil {
-		return nil, err
-	}
-
 	var cookies []*Cookie
-	if err := json.Unmarshal(data, &cookies); err != nil {
+	if err := loadJSONFile(sessionFile, &cookies); err != nil {
 		return nil, err
 	}
-
 	return cookies, nil
 }
 
 // SaveSession 将 cookies 保存到 `.instagram_session.json`。
 // 使用 0600 权限写入，尽量减少泄露风险（仅所有者可读写）。
 func SaveSession(cookies []*Cookie) error {
-	data, err := json.MarshalIndent(cookies, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(sessionFile, data, 0600)
+	return saveJSONFile(sessionFile, cookies, 0600)
 }
 
 // Cookie 是从浏览器侧导出的简化 cookie 结构（可 JSON 序列化）。
@@ -78,40 +67,14 @@ type Cookie struct {
 	Secure   bool    `json:"secure"`
 }
 
-// Login 执行"自动填写账号密码"的登录流程。
-// 实际使用中通常推荐 `ManualLogin()`：可处理验证码/2FA 等需要人工交互的场景。
-func Login(ctx context.Context, username, password string) error {
-	fmt.Println("正在登录 Instagram...")
-
-	err := chromedp.Run(ctx,
-		chromedp.Navigate("https://www.instagram.com/accounts/login/"),
-
-		// 等待登录表单加载
-		chromedp.WaitVisible(`input[name="username"]`, chromedp.ByQuery),
-
-		// 输入用户名和密码
-		chromedp.SendKeys(`input[name="username"]`, username, chromedp.ByQuery),
-		chromedp.SendKeys(`input[name="password"]`, password, chromedp.ByQuery),
-
-		// 点击登录按钮
-		chromedp.Click(`button[type="submit"]`, chromedp.ByQuery),
-
-		// 等待登录完成（等待主页元素出现或登录按钮消失）
-		chromedp.Sleep(3*time.Second),
-	)
-
-	if err != nil {
-		return fmt.Errorf("登录失败: %v", err)
-	}
-
-	// 获取并保存 cookies
+// ExtractBrowserCookies 从当前浏览器上下文中提取所有 Cookie。
+func ExtractBrowserCookies(ctx context.Context) ([]*Cookie, error) {
 	var cookies []*Cookie
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		cookiesData, err := network.GetCookies().Do(ctx)
 		if err != nil {
 			return err
 		}
-
 		for _, c := range cookiesData {
 			cookies = append(cookies, &Cookie{
 				Name:     c.Name,
@@ -125,7 +88,41 @@ func Login(ctx context.Context, username, password string) error {
 		}
 		return nil
 	})); err != nil {
-		return fmt.Errorf("获取 cookies 失败: %v", err)
+		return nil, fmt.Errorf("获取 cookies 失败: %v", err)
+	}
+	return cookies, nil
+}
+
+// Login 执行"自动填写账号密码"的登录流程。
+// 实际使用中通常推荐 `ManualLogin()`：可处理验证码/2FA 等需要人工交互的场景。
+func Login(ctx context.Context, username, password string) error {
+	fmt.Println("正在登录 Instagram...")
+
+	err := chromedp.Run(ctx,
+		chromedp.Navigate(instagramLoginURL),
+
+		// 等待登录表单加载
+		chromedp.WaitVisible(`input[name="username"]`, chromedp.ByQuery),
+
+		// 输入用户名和密码
+		chromedp.SendKeys(`input[name="username"]`, username, chromedp.ByQuery),
+		chromedp.SendKeys(`input[name="password"]`, password, chromedp.ByQuery),
+
+		// 点击登录按钮
+		chromedp.Click(`button[type="submit"]`, chromedp.ByQuery),
+
+		// 等待登录完成（等待主页元素出现或登录按钮消失）
+		chromedp.Sleep(loginActionWait),
+	)
+
+	if err != nil {
+		return fmt.Errorf("登录失败: %v", err)
+	}
+
+	// 获取并保存 cookies
+	cookies, err := ExtractBrowserCookies(ctx)
+	if err != nil {
+		return err
 	}
 
 	if err := SaveSession(cookies); err != nil {
@@ -170,7 +167,7 @@ func EnsureLoggedIn(ctx context.Context) error {
 		fmt.Println("找到已保存的 session，尝试使用...")
 
 		// 先访问 Instagram 主页
-		if err := chromedp.Run(ctx, chromedp.Navigate("https://www.instagram.com/")); err != nil {
+		if err := chromedp.Run(ctx, chromedp.Navigate(instagramBaseURL+"/")); err != nil {
 			return err
 		}
 
@@ -180,7 +177,7 @@ func EnsureLoggedIn(ctx context.Context) error {
 		} else {
 			// 刷新页面验证登录状态
 			if err := chromedp.Run(ctx,
-				chromedp.Navigate("https://www.instagram.com/"),
+				chromedp.Navigate(instagramBaseURL+"/"),
 				chromedp.WaitReady("body"),
 			); err != nil {
 				return err
@@ -202,53 +199,97 @@ func EnsureLoggedIn(ctx context.Context) error {
 	return fmt.Errorf("未找到有效的登录 session，请先运行: go run . login")
 }
 
-// CreateBrowserContext 创建有头浏览器上下文（用于登录等需要人工交互的操作）。
-// 这里会设置较"像真实用户"的 UA，并关闭部分自动化特征标记，以降低被页面脚本识别的概率。
-func CreateBrowserContext() (context.Context, context.CancelFunc) {
+// createBrowserContext 创建浏览器上下文的内部实现。
+// headless 控制是否无头模式，timeout 控制整体超时（0 表示不设超时）。
+// 公共配置：伪装 UA + 关闭自动化特征标记，降低被 Instagram 脚本识别的概率。
+func createBrowserContext(headless bool, timeout time.Duration) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false), // 登录时需要显示浏览器
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	ctx, ctxCancel := chromedp.NewContext(allocCtx)
+	if headless {
+		opts = append(opts,
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-images", true),
+			chromedp.Flag("blink-settings", "imagesEnabled=false"),
+		)
+	} else {
+		opts = append(opts,
+			chromedp.Flag("headless", false),
+		)
+	}
 
-	// 返回组合的 cancel 函数
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
+
+	if timeout > 0 {
+		timeoutCtx, timeoutCancel := context.WithTimeout(allocCtx, timeout)
+		ctx, ctxCancel := chromedp.NewContext(timeoutCtx)
+		cancel := func() {
+			ctxCancel()
+			timeoutCancel()
+			allocCancel()
+		}
+		return ctx, cancel
+	}
+
+	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		ctxCancel()
 		allocCancel()
 	}
-
 	return ctx, cancel
 }
 
+// CreateBrowserContext 创建有头浏览器上下文（用于登录等需要人工交互的操作）。
+func CreateBrowserContext() (context.Context, context.CancelFunc) {
+	return createBrowserContext(false, 0)
+}
+
 // CreateFastBrowserContext 创建快速无头浏览器上下文（用于抓取/下载）。
-// 关键点：
-// - headless=true：减少资源占用；如需调试可改为 false；
-// - 尝试禁用图片加载：降低带宽和页面渲染成本（但 GraphQL 媒体 URL 不依赖图片渲染）；\n+// - 添加 60 秒超时：避免 worker 长时间卡住；调用方应在任务完成后及时 cancel。
+// headless + 禁用图片 + 60 秒超时，调用方应在任务完成后及时 cancel。
 func CreateFastBrowserContext() (context.Context, context.CancelFunc) {
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true), // 无头模式
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("disable-images", true),                  // 禁用图片
-		chromedp.Flag("blink-settings", "imagesEnabled=false"), // 禁用图片加载
-		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+	return createBrowserContext(true, browserFastTimeout)
+}
+
+// ManualLogin 手动登录流程：打开有头浏览器，让用户完成登录（支持验证码/2FA）。
+func ManualLogin() error {
+	fmt.Println("=== Instagram 手动登录 ===")
+	fmt.Println("即将打开浏览器，请手动完成登录...")
+
+	// 创建浏览器上下文
+	ctx, cancel := CreateBrowserContext()
+	defer cancel()
+
+	// 打开 Instagram 登录页
+	err := chromedp.Run(ctx,
+		chromedp.Navigate(instagramLoginURL),
 	)
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-
-	// 添加 60 秒超时控制
-	timeoutCtx, timeoutCancel := context.WithTimeout(allocCtx, 60*time.Second)
-
-	ctx, ctxCancel := chromedp.NewContext(timeoutCtx)
-
-	// 返回组合的 cancel 函数
-	cancel := func() {
-		ctxCancel()
-		timeoutCancel()
-		allocCancel()
+	if err != nil {
+		return fmt.Errorf("打开登录页面失败: %v", err)
 	}
 
-	return ctx, cancel
+	// 等待用户手动登录
+	fmt.Println("\n请在浏览器中完成登录（包括验证码、双因素认证等）")
+	fmt.Println("登录完成后，回到这里按回车键继续...")
+	fmt.Scanln()
+
+	// 保存 cookies。这里直接从浏览器读取当前 cookie jar，
+	// 以便后续在无头上下文中复用登录态调用 GraphQL / 下载资源。
+	fmt.Println("正在保存登录状态...")
+	cookies, err := ExtractBrowserCookies(ctx)
+	if err != nil {
+		return err
+	}
+
+	if err := SaveSession(cookies); err != nil {
+		return fmt.Errorf("保存 session 失败: %v", err)
+	}
+
+	fmt.Println("✓ 登录状态已保存！")
+	fmt.Println("浏览器将在 2 秒后关闭...")
+	time.Sleep(pageLoadWait)
+
+	return nil
 }

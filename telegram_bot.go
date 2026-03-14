@@ -99,8 +99,8 @@ func NewTelegramClient(config *Config) (*TelegramClient, error) {
 		userStates:       make(map[int64]*UserState),
 		workerBaseURL:    workerBaseURL,
 		configPath:       "config.json",
-		shortClient:      &http.Client{Timeout: 5 * time.Second},
-		longClient:       &http.Client{Timeout: 3 * time.Minute},
+		shortClient:      &http.Client{Timeout: httpHealthCheckTimeout},
+		longClient:       &http.Client{Timeout: httpWorkerCallTimeout},
 	}
 
 	// 启动状态清理 goroutine
@@ -111,14 +111,14 @@ func NewTelegramClient(config *Config) (*TelegramClient, error) {
 
 // cleanupExpiredStates 定期清理过期的用户状态
 func (tb *TelegramClient) cleanupExpiredStates() {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(stateCleanupInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		tb.statesMutex.Lock()
 		now := time.Now()
 		for userID, state := range tb.userStates {
-			if now.Sub(state.Timestamp) > 5*time.Minute {
+			if now.Sub(state.Timestamp) > stateExpiration {
 				delete(tb.userStates, userID)
 				log.Printf("清理过期状态: user=%d", userID)
 			}
