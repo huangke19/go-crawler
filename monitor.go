@@ -224,17 +224,10 @@ func (ws *WorkerServer) notifyNewPost(username, shortcode string, chatIDs []int6
 
 	token := ws.config.TelegramBotToken
 	now := time.Now().Format("2006-01-02 15:04:05")
-	caption := fmt.Sprintf("🆕 @%s 发布了新帖子\nShortcode: %s\n⏰ %s",
-		username, shortcode, now)
 	postURL := fmt.Sprintf("%s/p/%s/", instagramBaseURL, shortcode)
-	textMsg := fmt.Sprintf("🆕 <b>@%s</b> 发布了新帖子\n%s\n⏰ %s", username, postURL, now)
+	caption := fmt.Sprintf("🆕 @%s 发布了新帖子\n%s\n⏰ %s", username, postURL, now)
 
 	for _, chatID := range chatIDs {
-		// 发送文字通知
-		sendTelegramMessage(token, chatID, textMsg)
-		log.Printf("监控：已发送文字通知 → chatID=%d @%s", chatID, username)
-
-		// 发送文件
 		for _, fp := range filePaths {
 			if err := sendTelegramFile(token, chatID, fp, caption); err != nil {
 				log.Printf("监控：发送文件失败 %s: %v", fp, err)
@@ -242,24 +235,6 @@ func (ws *WorkerServer) notifyNewPost(username, shortcode string, chatIDs []int6
 				log.Printf("监控：已发送文件 → chatID=%d %s", chatID, fp)
 			}
 		}
-	}
-}
-
-// sendTelegramMessage 发送文本消息（HTML parse_mode）。
-func sendTelegramMessage(token string, chatID int64, text string) {
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	payload := map[string]interface{}{
-		"chat_id":    chatID,
-		"text":       text,
-		"parse_mode": "HTML",
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	resp, err := httpClient.Post(apiURL, "application/json", bytes.NewReader(body))
-	if err == nil {
-		resp.Body.Close()
 	}
 }
 
