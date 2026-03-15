@@ -750,7 +750,7 @@ func (tb *TelegramClient) removeFavoriteAccount(account string) error {
 	tb.accountsMu.Lock()
 	defer tb.accountsMu.Unlock()
 
-	filtered := tb.favoriteAccounts[:0]
+	filtered := make([]string, 0, len(tb.favoriteAccounts))
 	found := false
 	for _, a := range tb.favoriteAccounts {
 		if a == account {

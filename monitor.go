@@ -201,14 +201,17 @@ func (ws *WorkerServer) checkAccount(username string) error {
 		log.Printf("监控：@%s 无新帖（shortcode 未变化）", username)
 	}
 
-	// 更新状态
-	states[username] = MonitorState{
+	// 更新状态（重新加载以避免覆盖并发写入）
+	monitorStateMu.Lock()
+	freshStates, loadErr := loadMonitorStates()
+	if loadErr != nil {
+		freshStates = states
+	}
+	freshStates[username] = MonitorState{
 		LastShortcode: latestShortcode,
 		LastCheck:     time.Now().Format(time.RFC3339),
 	}
-
-	monitorStateMu.Lock()
-	if err := saveMonitorStates(states); err != nil {
+	if err := saveMonitorStates(freshStates); err != nil {
 		log.Printf("监控：@%s 保存状态失败: %v", username, err)
 	}
 	monitorStateMu.Unlock()

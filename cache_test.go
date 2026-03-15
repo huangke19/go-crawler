@@ -20,14 +20,17 @@ func setupCacheTest(t *testing.T) {
 func resetCacheMaps() {
 	mediaCacheMu.Lock()
 	mediaCacheMap = nil
+	mediaCacheLoaded = false
 	mediaCacheMu.Unlock()
 
 	postsCacheMu.Lock()
 	postsCacheMap = nil
+	postsCacheLoaded = false
 	postsCacheMu.Unlock()
 
 	filesCacheMu.Lock()
 	filesCacheMap = nil
+	filesCacheLoaded = false
 	filesCacheMu.Unlock()
 
 	historyCacheMu.Lock()

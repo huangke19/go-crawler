@@ -107,6 +107,9 @@ var (
 	mediaCacheMap    map[string]*MediaCache
 	postsCacheMap    map[string]*PostsCache
 	filesCacheMap    map[string]*FilesCache
+	mediaCacheLoaded bool
+	postsCacheLoaded bool
+	filesCacheLoaded bool
 	historyCacheMu   sync.RWMutex
 	historyCache     []*FilesCache
 	historyCacheTime time.Time
@@ -134,7 +137,7 @@ func initCacheMaps() {
 // - 第一次读取时从磁盘加载，后续直接走内存 map。
 func LoadMediaCache() (map[string]*MediaCache, error) {
 	mediaCacheMu.RLock()
-	if len(mediaCacheMap) > 0 {
+	if mediaCacheLoaded {
 		result := mediaCacheMap
 		mediaCacheMu.RUnlock()
 		return result, nil
@@ -145,7 +148,7 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 	defer mediaCacheMu.Unlock()
 
 	// 双重检查：可能其他 goroutine 已经加载了
-	if len(mediaCacheMap) > 0 {
+	if mediaCacheLoaded {
 		return mediaCacheMap, nil
 	}
 
@@ -153,11 +156,13 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 	if err := loadJSONFile(path, &mediaCacheMap); err != nil {
 		if os.IsNotExist(err) {
 			mediaCacheMap = make(map[string]*MediaCache)
+			mediaCacheLoaded = true
 			return mediaCacheMap, nil
 		}
 		return nil, err
 	}
 
+	mediaCacheLoaded = true
 	return mediaCacheMap, nil
 }
 
@@ -168,6 +173,7 @@ func SaveMediaCache(cache map[string]*MediaCache) error {
 	defer mediaCacheMu.Unlock()
 
 	mediaCacheMap = cache
+	mediaCacheLoaded = true
 
 	path := filepath.Join(cacheDir, "media_cache.json")
 	return saveJSONFile(path, cache, 0644)
@@ -177,7 +183,7 @@ func SaveMediaCache(cache map[string]*MediaCache) error {
 // 与媒体缓存一致：惰性加载到内存，后续读取无需反复读盘。
 func LoadPostsCache() (map[string]*PostsCache, error) {
 	postsCacheMu.RLock()
-	if len(postsCacheMap) > 0 {
+	if postsCacheLoaded {
 		postsCacheMu.RUnlock()
 		return postsCacheMap, nil
 	}
@@ -186,15 +192,21 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 	postsCacheMu.Lock()
 	defer postsCacheMu.Unlock()
 
+	if postsCacheLoaded {
+		return postsCacheMap, nil
+	}
+
 	path := filepath.Join(cacheDir, "posts_cache.json")
 	if err := loadJSONFile(path, &postsCacheMap); err != nil {
 		if os.IsNotExist(err) {
 			postsCacheMap = make(map[string]*PostsCache)
+			postsCacheLoaded = true
 			return postsCacheMap, nil
 		}
 		return nil, err
 	}
 
+	postsCacheLoaded = true
 	return postsCacheMap, nil
 }
 
@@ -204,6 +216,7 @@ func SavePostsCache(cache map[string]*PostsCache) error {
 	defer postsCacheMu.Unlock()
 
 	postsCacheMap = cache
+	postsCacheLoaded = true
 
 	path := filepath.Join(cacheDir, "posts_cache.json")
 	return saveJSONFile(path, cache, 0644)
@@ -213,7 +226,7 @@ func SavePostsCache(cache map[string]*PostsCache) error {
 // 文件缓存除了读盘外，在 `GetFilesFromCache` 还会做"文件存在性校验"，避免返回已被删除的路径。
 func LoadFilesCache() (map[string]*FilesCache, error) {
 	filesCacheMu.RLock()
-	if len(filesCacheMap) > 0 {
+	if filesCacheLoaded {
 		filesCacheMu.RUnlock()
 		return filesCacheMap, nil
 	}
@@ -222,15 +235,21 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 	filesCacheMu.Lock()
 	defer filesCacheMu.Unlock()
 
+	if filesCacheLoaded {
+		return filesCacheMap, nil
+	}
+
 	path := filepath.Join(cacheDir, "files_cache.json")
 	if err := loadJSONFile(path, &filesCacheMap); err != nil {
 		if os.IsNotExist(err) {
 			filesCacheMap = make(map[string]*FilesCache)
+			filesCacheLoaded = true
 			return filesCacheMap, nil
 		}
 		return nil, err
 	}
 
+	filesCacheLoaded = true
 	return filesCacheMap, nil
 }
 
@@ -240,6 +259,7 @@ func SaveFilesCache(cache map[string]*FilesCache) error {
 	defer filesCacheMu.Unlock()
 
 	filesCacheMap = cache
+	filesCacheLoaded = true
 
 	path := filepath.Join(cacheDir, "files_cache.json")
 	return saveJSONFile(path, cache, 0644)
@@ -268,6 +288,17 @@ func GetPostsFromCache(username string) (*PostsCache, bool) {
 	}
 	// 检查是否过期
 	if time.Now().After(posts.ExpiresAt) {
+		return nil, false
+	}
+	return posts, true
+}
+
+// GetPostsFromCacheRaw 从帖子缓存获取用户帖子列表（不检查过期时间）。
+// 该方法用于“更新检测”场景：即使缓存过期，也需要拿到旧基线来判断是否真有新帖。
+func GetPostsFromCacheRaw(username string) (*PostsCache, bool) {
+	cache, _ := LoadPostsCache()
+	posts, ok := cache[username]
+	if !ok {
 		return nil, false
 	}
 	return posts, true

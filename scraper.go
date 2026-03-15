@@ -57,19 +57,6 @@ func NavigateToUser(ctx context.Context, username string) error {
 	fmt.Printf("正在访问 @%s 的主页...\n", username)
 
 	err := chromedp.Run(ctx,
-		// 禁用图片和媒体加载
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			// 通过 CDP 协议禁用图片
-			return chromedp.Evaluate(`
-				// 禁用图片加载
-				document.addEventListener('DOMContentLoaded', function() {
-					var images = document.getElementsByTagName('img');
-					for(var i = 0; i < images.length; i++) {
-						images[i].src = '';
-					}
-				});
-			`, nil).Do(ctx)
-		}),
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
 		chromedp.Sleep(pageLoadWait), // 增加等待时间，确保初始内容加载
@@ -446,7 +433,10 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 			fmt.Printf("检测到多图轮播，共 %d 项\n", len(edges))
 			mediaInfo.Type = "carousel"
 			for _, edge := range edges {
-				edgeMap := edge.(map[string]interface{})
+				edgeMap, ok := edge.(map[string]interface{})
+				if !ok {
+					continue
+				}
 				if node, ok := edgeMap["node"].(map[string]interface{}); ok {
 					// 检查是否是视频
 					if isVideo, ok := node["is_video"].(bool); ok && isVideo {
@@ -483,11 +473,12 @@ func extractMediaFromJSON(data map[string]interface{}) (*MediaInfo, error) {
 // 参数 ctx 必须是已登录的浏览器上下文，minPosts 指定最少加载的帖子数量。
 // 返回 (是否有更新, 帖子总数, error)。
 func RefreshPostsCache(ctx context.Context, username string, minPosts int) (bool, int, error) {
-	// 获取缓存中的第 1 条 shortcode
-	var cachedFirstShortcode string
-	if postsCache, ok := GetPostsFromCache(username); ok && len(postsCache.Posts) > 0 {
-		cachedFirstShortcode = postsCache.Posts[0].Shortcode
+	// 获取缓存基线（不过期读取）与有效性（过期检查）
+	var cachedPosts []PostItem
+	if postsCache, ok := GetPostsFromCacheRaw(username); ok && postsCache != nil {
+		cachedPosts = postsCache.Posts
 	}
+	_, hasValidCache := GetPostsFromCache(username)
 
 	// 访问用户主页
 	if err := NavigateToUser(ctx, username); err != nil {
@@ -504,14 +495,7 @@ func RefreshPostsCache(ctx context.Context, username string, minPosts int) (bool
 		return false, 0, fmt.Errorf("未找到任何帖子")
 	}
 
-	// 提取 shortcode 并对比
-	actualFirstShortcode := extractShortcode(postLinks[0])
-
-	if cachedFirstShortcode != "" && cachedFirstShortcode == actualFirstShortcode {
-		return false, len(postLinks), nil
-	}
-
-	// 有更新或无缓存，构建并保存新缓存
+	// 构建新缓存
 	posts := []PostItem{}
 	for i, link := range postLinks {
 		sc := extractShortcode(link)
@@ -523,13 +507,62 @@ func RefreshPostsCache(ctx context.Context, username string, minPosts int) (bool
 		}
 	}
 
-	SavePostsToCache(username, &PostsCache{
-		Posts:     posts,
-		UpdatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(postsCacheExpiry),
-	})
+	// 仅当最新列表中出现“缓存中不存在的 shortcode”时，判定为有新帖。
+	// 注意：缓存过期仅表示需要刷新缓存，不代表有新帖。
+	needRefresh := hasNewPostComparedToCache(cachedPosts, posts)
 
-	return true, len(posts), nil
+	// 缓存失效或内容变化时都刷新落盘，避免后续重复抓取。
+	if !hasValidCache || !samePostsOrder(cachedPosts, posts) {
+		SavePostsToCache(username, &PostsCache{
+			Posts:     posts,
+			UpdatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(postsCacheExpiry),
+		})
+	}
+
+	return needRefresh, len(posts), nil
+}
+
+func hasNewPostComparedToCache(cached, latest []PostItem) bool {
+	if len(cached) == 0 || len(latest) == 0 {
+		return false
+	}
+
+	cachedSet := make(map[string]struct{}, len(cached))
+	for _, item := range cached {
+		if item.Shortcode != "" {
+			cachedSet[item.Shortcode] = struct{}{}
+		}
+	}
+
+	compareCount := len(cached)
+	if len(latest) < compareCount {
+		compareCount = len(latest)
+	}
+
+	for i := 0; i < compareCount; i++ {
+		sc := latest[i].Shortcode
+		if sc == "" {
+			continue
+		}
+		if _, ok := cachedSet[sc]; !ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+func samePostsOrder(a, b []PostItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Shortcode != b[i].Shortcode {
+			return false
+		}
+	}
+	return true
 }
 
 // extractImageURL 从媒体数据中提取图片 URL（优先选择较高质量）。

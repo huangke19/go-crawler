@@ -27,8 +27,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,8 +57,9 @@ type TelegramClient struct {
 	statesMutex      sync.RWMutex
 	workerBaseURL    string
 	configPath       string
-	shortClient      *http.Client // 短超时 HTTP 客户端（健康检查等）
-	longClient       *http.Client // 长超时 HTTP 客户端（下载/更新等耗时请求）
+	shortClient      *http.Client  // 短超时 HTTP 客户端（健康检查等）
+	longClient       *http.Client  // 长超时 HTTP 客户端（下载/更新等耗时请求）
+	stopCh           chan struct{} // 用于通知后台 goroutine 退出
 }
 
 // NewTelegramClient 构建 bot 实例并初始化权限与默认配置。
@@ -101,6 +100,7 @@ func NewTelegramClient(config *Config) (*TelegramClient, error) {
 		configPath:       "config.json",
 		shortClient:      &http.Client{Timeout: httpHealthCheckTimeout},
 		longClient:       &http.Client{Timeout: httpWorkerCallTimeout},
+		stopCh:           make(chan struct{}),
 	}
 
 	// 启动状态清理 goroutine
@@ -114,16 +114,21 @@ func (tb *TelegramClient) cleanupExpiredStates() {
 	ticker := time.NewTicker(stateCleanupInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		tb.statesMutex.Lock()
-		now := time.Now()
-		for userID, state := range tb.userStates {
-			if now.Sub(state.Timestamp) > stateExpiration {
-				delete(tb.userStates, userID)
-				log.Printf("清理过期状态: user=%d", userID)
+	for {
+		select {
+		case <-ticker.C:
+			tb.statesMutex.Lock()
+			now := time.Now()
+			for userID, state := range tb.userStates {
+				if now.Sub(state.Timestamp) > stateExpiration {
+					delete(tb.userStates, userID)
+					log.Printf("清理过期状态: user=%d", userID)
+				}
 			}
+			tb.statesMutex.Unlock()
+		case <-tb.stopCh:
+			return
 		}
-		tb.statesMutex.Unlock()
 	}
 }
 
@@ -198,6 +203,7 @@ func (tb *TelegramClient) isAdminUser(userID int64) bool {
 	}
 	return tb.adminUsers[userID]
 }
+
 // sendMessage 发送普通文本消息。\n+// 发送失败仅记录日志，不中断主流程。
 func (tb *TelegramClient) sendMessage(chatID int64, text string) tgbotapi.Message {
 	msg := tgbotapi.NewMessage(chatID, text)
@@ -225,36 +231,11 @@ func (tb *TelegramClient) editMessageWithKeyboard(chatID int64, messageID int, t
 	}
 }
 
-// getVideoResolution 使用 ffprobe 获取视频的宽高信息。
-// 如果 ffprobe 不可用或获取失败，返回 0, 0。
-func getVideoResolution(filePath string) (int, int) {
-	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height", "-of", "csv=p=0", filePath)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, 0
-	}
-
-	parts := strings.Split(strings.TrimSpace(string(output)), ",")
-	if len(parts) != 2 {
-		return 0, 0
-	}
-
-	width, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
-	height, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-	return width, height
-}
-
 // sendFile 上传文件到 Telegram。
-// 对于视频，会尝试获取宽高信息以保持原有的长宽比显示。
 // 如果 ffprobe 不可用，会降级到不设置宽高（Telegram 会使用默认显示）。
 func (tb *TelegramClient) sendFile(chatID int64, filePath string) error {
 	if strings.HasSuffix(filePath, ".mp4") {
 		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
-
-		// 尝试获取视频宽高，以保持原有长宽比
-		_, _ = getVideoResolution(filePath)
-
 		_, err := tb.bot.Send(video)
 		return err
 	}

@@ -341,24 +341,10 @@ func RemoveServicePID(service string) {
 }
 
 func ShowLastLogs(logPath string, lines int) error {
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		return err
-	}
-
-	allLines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
-	if len(allLines) > 0 && allLines[len(allLines)-1] == "" {
-		allLines = allLines[:len(allLines)-1]
-	}
-
-	start := len(allLines) - lines
-	if start < 0 {
-		start = 0
-	}
-	for i := start; i < len(allLines); i++ {
-		fmt.Println(allLines[i])
-	}
-	return nil
+	cmd := exec.Command("tail", "-n", strconv.Itoa(lines), logPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // 兼容旧接口（默认管理 bot）

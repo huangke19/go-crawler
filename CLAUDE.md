@@ -700,6 +700,18 @@ tail -f gobot.log
 
 ## 健壮性提升记录 (2026-03-12)
 
+## 更新记录 (2026-03-15)
+
+### check-update 误报修复
+
+- 修复点：`RefreshPostsCache()` 不再把“`posts_cache` 过期后重建缓存”判定为“有新帖子”。
+- 根因：旧逻辑仅比较缓存首条 shortcode，且过期缓存会被当作无缓存，导致 `needRefresh=true` 误报。
+- 新逻辑：
+  - 使用不过期读取的缓存作为对比基线（`GetPostsFromCacheRaw()`）。
+  - 仅当最新帖子列表（对比窗口内）出现缓存中不存在的 shortcode 时，才返回“有更新”。
+  - 缓存过期但内容未变化时，只刷新缓存有效期，不再提示有新帖。
+- 影响范围：CLI `crawler check-update|cu` 与 Telegram “🔄 检查更新”按钮。
+
 ### 健壮性评分
 
 **从 6.5/10 提升到 9.2/10** (+42%)

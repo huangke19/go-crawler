@@ -86,7 +86,7 @@ type WorkerServer struct {
 	browserCancel context.CancelFunc
 	browserMu     sync.Mutex
 	activeReqs    sync.WaitGroup // 跟踪活跃请求
-	stopCh        chan struct{}   // 关闭信号，通知监控 goroutine 退出
+	stopCh        chan struct{}  // 关闭信号，通知监控 goroutine 退出
 }
 
 // WorkerDownloadRequest 是 Bot/CLI 调用 Worker 的下载请求体。
@@ -274,6 +274,8 @@ func (ws *WorkerServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 	var req WorkerDownloadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, WorkerDownloadResponse{Success: false, Message: "请求体格式错误"})
@@ -416,9 +418,12 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 				break
 			}
 		}
-		// 如果缓存的帖子数量不足，需要重新加载
+		// 如果缓存的帖子数量不足或未匹配到，需要重新加载
 		if shortcode == "" && postIndex > len(postsCache.Posts) {
 			log.Printf("  ⚠️  缓存的帖子数量不足（共 %d 条，请求第 %d 条），需要重新加载", len(postsCache.Posts), postIndex)
+			needRefresh = true
+		} else if shortcode == "" {
+			log.Printf("  ⚠️  缓存中未找到第 %d 条帖子，需要重新加载", postIndex)
 			needRefresh = true
 		}
 	} else {
@@ -573,6 +578,8 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	type CheckUpdateRequest struct {
 		Username string `json:"username"`

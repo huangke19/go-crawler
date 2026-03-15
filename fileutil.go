@@ -22,7 +22,15 @@ func saveJSONFile(path string, v any, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, perm)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // extractShortcode 从帖子 URL 中提取 shortcode。
