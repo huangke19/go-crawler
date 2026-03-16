@@ -448,14 +448,17 @@ func TestApplyEnvOverrides(t *testing.T) {
 	// 保存原始环境变量
 	oldToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	oldAddr := os.Getenv("WORKER_ADDR")
+	oldWorkerToken := os.Getenv("WORKER_API_TOKEN")
 	defer func() {
 		os.Setenv("TELEGRAM_BOT_TOKEN", oldToken)
 		os.Setenv("WORKER_ADDR", oldAddr)
+		os.Setenv("WORKER_API_TOKEN", oldWorkerToken)
 	}()
 
 	// 设置测试环境变量
 	os.Setenv("TELEGRAM_BOT_TOKEN", "999999999:TestToken")
 	os.Setenv("WORKER_ADDR", "localhost:9999")
+	os.Setenv("WORKER_API_TOKEN", "test-worker-token")
 
 	config := &Config{
 		TelegramBotToken: "123456789:OriginalToken",
@@ -470,5 +473,8 @@ func TestApplyEnvOverrides(t *testing.T) {
 
 	if config.WorkerAddr != "localhost:9999" {
 		t.Errorf("WorkerAddr 未被环境变量覆盖")
+	}
+	if config.WorkerAPIToken != "test-worker-token" {
+		t.Errorf("WorkerAPIToken 未被环境变量覆盖")
 	}
 }

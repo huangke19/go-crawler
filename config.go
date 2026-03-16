@@ -13,6 +13,7 @@
 //   - admin_user_ids：管理员用户 ID 列表（为空时回退为 allowed_user_ids）
 //   - favorite_accounts：常用账户列表（用于 Bot 快速选择）
 //   - worker_addr：Worker 服务监听地址（默认 127.0.0.1:18080）
+//   - worker_api_token：Worker 接口鉴权 Token（可选，建议配置）
 //
 // ============================================================================
 
@@ -27,16 +28,17 @@ import (
 )
 
 type Config struct {
-	TelegramBotToken   string   `json:"telegram_bot_token"`
-	AllowedUserIDs     []int64  `json:"allowed_user_ids"`
-	AdminUserIDs       []int64  `json:"admin_user_ids"`
-	FavoriteAccounts   []string `json:"favorite_accounts"`
-	WorkerAddr         string   `json:"worker_addr"`
-	MonitorAccounts    []string `json:"monitor_accounts"`      // 监控的账户列表
-	MonitorIntervalMin int      `json:"monitor_interval_min"`  // 轮询间隔（分钟），默认 30
-	MonitorCompareTopN int      `json:"monitor_compare_top_n"` // 监控对比前N条，默认20
-	MaxConcurrentDownloads int  `json:"max_concurrent_downloads"`
-	PostsCacheExpiryHours  int  `json:"posts_cache_expiry_hours"`
+	TelegramBotToken       string   `json:"telegram_bot_token"`
+	AllowedUserIDs         []int64  `json:"allowed_user_ids"`
+	AdminUserIDs           []int64  `json:"admin_user_ids"`
+	FavoriteAccounts       []string `json:"favorite_accounts"`
+	WorkerAddr             string   `json:"worker_addr"`
+	WorkerAPIToken         string   `json:"worker_api_token"`
+	MonitorAccounts        []string `json:"monitor_accounts"`      // 监控的账户列表
+	MonitorIntervalMin     int      `json:"monitor_interval_min"`  // 轮询间隔（分钟），默认 30
+	MonitorCompareTopN     int      `json:"monitor_compare_top_n"` // 监控对比前N条，默认20
+	MaxConcurrentDownloads int      `json:"max_concurrent_downloads"`
+	PostsCacheExpiryHours  int      `json:"posts_cache_expiry_hours"`
 }
 
 // LoadConfig 从指定路径读取 `config.json` 并做必要的兼容与默认值填充：
@@ -65,6 +67,7 @@ func applyDefaults(config *Config) {
 	if strings.TrimSpace(config.WorkerAddr) == "" {
 		config.WorkerAddr = defaultWorkerListenAddr
 	}
+	config.WorkerAPIToken = strings.TrimSpace(config.WorkerAPIToken)
 
 	if len(config.AdminUserIDs) == 0 && len(config.AllowedUserIDs) > 0 {
 		config.AdminUserIDs = append([]int64(nil), config.AllowedUserIDs...)

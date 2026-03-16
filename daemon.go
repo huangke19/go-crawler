@@ -62,10 +62,18 @@ type ServiceRuntime struct {
 	Detail  string
 }
 
-// getWorkDir 获取工作目录（优先使用当前目录，如果没有权限则使用用户主目录）
+// getWorkDir 获取守护进程工作目录（稳定路径，避免受当前执行目录影响）。
+// 优先级：
+// 1. 环境变量 GOBOT_WORKDIR
+// 2. 可执行文件所在目录
+// 3. 用户主目录 ~/.gobot
+// 4. /tmp
 func getWorkDir() string {
-	if cwd, err := os.Getwd(); err == nil {
-		return cwd
+	if value := strings.TrimSpace(os.Getenv("GOBOT_WORKDIR")); value != "" {
+		return value
+	}
+	if executable, err := os.Executable(); err == nil {
+		return filepath.Dir(executable)
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".gobot")
@@ -96,11 +104,17 @@ func getServiceSpec(service string) (serviceSpec, error) {
 	}
 }
 
-func buildServiceCommand(spec serviceSpec, crawlerPath string) *exec.Cmd {
-	args := append([]string{"-i", crawlerPath}, spec.args...)
-	cmd := exec.Command("caffeinate", args...)
+func buildServiceCommand(spec serviceSpec, crawlerPath string) (*exec.Cmd, bool) {
+	if _, err := exec.LookPath("caffeinate"); err == nil {
+		args := append([]string{"-i", crawlerPath}, spec.args...)
+		cmd := exec.Command("caffeinate", args...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		return cmd, true
+	}
+
+	cmd := exec.Command(crawlerPath, spec.args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return cmd
+	return cmd, false
 }
 
 func StartServiceDaemon(service string) (string, error) {
@@ -133,7 +147,7 @@ func StartServiceDaemon(service string) (string, error) {
 	}
 	defer logFd.Close()
 
-	cmd := buildServiceCommand(spec, exePath)
+	cmd, usingCaffeinate := buildServiceCommand(spec, exePath)
 	cmd.Stdout = logFd
 	cmd.Stderr = logFd
 
@@ -151,7 +165,11 @@ func StartServiceDaemon(service string) (string, error) {
 		return "", fmt.Errorf("进程启动后立即退出，请查看日志: %s", logPath)
 	}
 
-	return fmt.Sprintf("%s 已启动 (PID: %d)\n日志文件: %s", spec.label, cmd.Process.Pid, logPath), nil
+	msg := fmt.Sprintf("%s 已启动 (PID: %d)\n日志文件: %s", spec.label, cmd.Process.Pid, logPath)
+	if !usingCaffeinate {
+		msg += "\n提示: 未检测到 caffeinate，系统休眠时服务可能暂停"
+	}
+	return msg, nil
 }
 
 func StopServiceDaemon(service string) (string, error) {

@@ -24,15 +24,20 @@
 ```text
 go-crawler/
 ├── main.go                # crawler 命令入口（login/download/bot/worker/setup-bot）
-├── worker.go              # worker HTTP 服务与下载任务执行
-├── bot.go                 # Telegram 命令、按钮回调、worker 调用
+├── worker_server.go       # worker HTTP 服务生命周期与路由
+├── worker_handlers.go     # worker 下载/检查更新/监控请求处理
+├── telegram_bot.go        # Telegram Bot 核心
+├── telegram_handler_*.go  # Telegram 命令与回调处理
+├── telegram_worker.go     # Bot 调用 worker HTTP 接口
 ├── daemon.go              # bot/worker 双服务守护管理
 ├── gobot.go               # gobot 管理命令（支持 worker 子命令）
-├── config.go              # 配置加载与默认值（admin_user_ids、worker_addr）
-├── setup_bot.go           # BotFather 命令菜单文本
+├── config.go              # 配置加载与默认值（admin_user_ids、worker_addr、worker_api_token）
+├── setup_telegram_bot.go  # BotFather 命令菜单文本
 ├── downloader.go          # 下载实现
-├── scraper.go             # 帖子定位与媒体提取
-├── auth.go/login.go       # 登录与会话管理
+├── scraper_navigator.go   # 帖子定位与导航
+├── scraper_extractor.go   # 媒体提取
+├── scraper_cache.go       # 帖子缓存刷新
+├── auth.go                # 登录与会话管理
 ├── config.example.json    # 配置示例
 └── build.sh               # 编译脚本
 ```
@@ -43,10 +48,12 @@ go-crawler/
 
 - `admin_user_ids`: `/control` 管理员白名单
 - `worker_addr`: worker 监听地址（默认 `127.0.0.1:18080`）
+- `worker_api_token`: worker HTTP 鉴权 token（可选，建议开启）
 
 兼容策略：
 
 - `admin_user_ids` 未配置时，默认回退 `allowed_user_ids`
+- `worker_api_token` 未配置时，worker 默认只接受本机请求（loopback）
 
 ## 命令
 

@@ -10,6 +10,7 @@
 // 支持的环境变量：
 //   - TELEGRAM_BOT_TOKEN: Telegram Bot Token
 //   - WORKER_ADDR: Worker 服务地址
+//   - WORKER_API_TOKEN: Worker 接口鉴权 Token
 //   - ALLOWED_USER_IDS: 允许的用户 ID（逗号分隔）
 //   - ADMIN_USER_IDS: 管理员用户 ID（逗号分隔）
 //
@@ -52,6 +53,9 @@ func applyEnvOverrides(config *Config) {
 	// Worker 地址
 	if addr := os.Getenv("WORKER_ADDR"); addr != "" {
 		config.WorkerAddr = addr
+	}
+	if token := os.Getenv("WORKER_API_TOKEN"); token != "" {
+		config.WorkerAPIToken = strings.TrimSpace(token)
 	}
 
 	// 允许的用户 ID
@@ -123,6 +127,9 @@ export TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
 # Worker 服务地址（可选，默认 127.0.0.1:18080）
 export WORKER_ADDR="127.0.0.1:18080"
 
+# Worker 接口鉴权 Token（可选，建议开启）
+export WORKER_API_TOKEN="replace_with_strong_token"
+
 # 允许的用户 ID（可选，逗号分隔）
 export ALLOWED_USER_IDS="123456789,987654321"
 
@@ -145,6 +152,7 @@ func PrintEnvStatus() {
 	envVars := []string{
 		"TELEGRAM_BOT_TOKEN",
 		"WORKER_ADDR",
+		"WORKER_API_TOKEN",
 		"ALLOWED_USER_IDS",
 		"ADMIN_USER_IDS",
 		"MONITOR_INTERVAL_MIN",
@@ -157,7 +165,7 @@ func PrintEnvStatus() {
 		value := os.Getenv(key)
 		if value != "" {
 			// 隐藏敏感信息
-			if key == "TELEGRAM_BOT_TOKEN" {
+			if key == "TELEGRAM_BOT_TOKEN" || key == "WORKER_API_TOKEN" {
 				if len(value) > 10 {
 					value = value[:10] + "..."
 				}

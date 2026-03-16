@@ -70,8 +70,11 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 
 	apiURL := instagramGraphQL
 
-	// 创建 HTTP POST 请求
-	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData.Encode()))
+	// 创建 HTTP POST 请求（绑定上层上下文，支持取消/超时传递）
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %v", err)
 	}

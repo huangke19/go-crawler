@@ -4,6 +4,7 @@
   "admin_user_ids": [123456789],
   "favorite_accounts": ["nike", "instagram", "natgeo", "nasa", "apple"],
   "worker_addr": "127.0.0.1:18080",
+  "worker_api_token": "",
   "monitor_accounts": ["example_account"],
   "monitor_interval_min": 30,
   "monitor_compare_top_n": 10,

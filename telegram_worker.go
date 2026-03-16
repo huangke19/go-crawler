@@ -35,6 +35,18 @@ func (tb *TelegramClient) checkWorkerHealth() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+func (tb *TelegramClient) postWorkerJSON(path string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, tb.workerBaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("创建 worker 请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if tb.workerAPIToken != "" {
+		req.Header.Set(workerAuthHeader, tb.workerAPIToken)
+	}
+	return tb.longClient.Do(req)
+}
+
 func (tb *TelegramClient) executeDownload(chatID int64, username string, postIndex int) {
 	statusMsg := tb.sendMessage(chatID, fmt.Sprintf("⏳ 正在下载 @%s 的第 %d 个帖子...", username, postIndex))
 
@@ -136,7 +148,7 @@ func (tb *TelegramClient) requestWorkerDownload(username string, postIndex int) 
 		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}
 
-	resp, err := tb.longClient.Post(tb.workerBaseURL+"/download", "application/json", bytes.NewReader(body))
+	resp, err := tb.postWorkerJSON("/download", body)
 	if err != nil {
 		return nil, fmt.Errorf("worker 请求失败: %w", err)
 	}
@@ -174,7 +186,7 @@ func (tb *TelegramClient) requestWorkerDownloadByShortcode(shortcode string) ([]
 		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}
 
-	resp, err := tb.longClient.Post(tb.workerBaseURL+"/download", "application/json", bytes.NewReader(body))
+	resp, err := tb.postWorkerJSON("/download", body)
 	if err != nil {
 		return nil, fmt.Errorf("worker 请求失败: %w", err)
 	}
@@ -268,7 +280,7 @@ func (tb *TelegramClient) requestWorkerCheckUpdate(username string) (*CheckUpdat
 		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}
 
-	resp, err := tb.longClient.Post(tb.workerBaseURL+"/check-update", "application/json", bytes.NewReader(body))
+	resp, err := tb.postWorkerJSON("/check-update", body)
 	if err != nil {
 		return nil, fmt.Errorf("worker 请求失败: %w", err)
 	}
@@ -306,7 +318,7 @@ func (tb *TelegramClient) requestWorkerMonitorCheck(username string) (*MonitorCh
 		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}
 
-	resp, err := tb.longClient.Post(tb.workerBaseURL+"/monitor-check", "application/json", bytes.NewReader(body))
+	resp, err := tb.postWorkerJSON("/monitor-check", body)
 	if err != nil {
 		return nil, fmt.Errorf("worker 请求失败: %w", err)
 	}

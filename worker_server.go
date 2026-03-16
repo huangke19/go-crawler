@@ -46,6 +46,7 @@ const (
 type WorkerServer struct {
 	server           *http.Server
 	config           *Config
+	workerAPIToken   string
 	browserCtx       context.Context
 	browserCancel    context.CancelFunc
 	browserMu        sync.Mutex
@@ -56,9 +57,12 @@ type WorkerServer struct {
 }
 
 // getWorkerListenAddr 获取 worker 监听地址。
-// 优先级：环境变量 `CRAWLER_WORKER_ADDR` > config.json 的 worker_addr > 默认值。
+// 优先级：
+// 1. 环境变量 `WORKER_ADDR`（与 bot 侧配置保持一致）
+// 2. config.json 的 worker_addr
+// 3. 默认值
 func getWorkerListenAddr() string {
-	if value := strings.TrimSpace(os.Getenv("CRAWLER_WORKER_ADDR")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("WORKER_ADDR")); value != "" {
 		return value
 	}
 
@@ -83,6 +87,7 @@ func NewWorkerServer() *WorkerServer {
 	if cfg, err := LoadConfig("config.json"); err == nil {
 		ws.config = cfg
 	}
+	ws.workerAPIToken = getWorkerAPIToken(ws.config)
 
 	mux.HandleFunc("/health", ws.handleHealth)
 	mux.HandleFunc("/download", ws.handleDownload)
@@ -99,6 +104,16 @@ func NewWorkerServer() *WorkerServer {
 	}
 
 	return ws
+}
+
+func getWorkerAPIToken(cfg *Config) string {
+	if value := strings.TrimSpace(os.Getenv("WORKER_API_TOKEN")); value != "" {
+		return value
+	}
+	if cfg != nil {
+		return strings.TrimSpace(cfg.WorkerAPIToken)
+	}
+	return ""
 }
 
 // Start 启动 HTTP 服务（阻塞）。
@@ -238,7 +253,7 @@ func RunWorker() error {
 		return fmt.Errorf("worker 服务异常退出: %w", err)
 	case sig := <-sigCh:
 		log.Printf("收到退出信号: %s", sig.String())
-		ctx, cancel := context.WithTimeout(context.Background(), workerReadHeaderTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), workerShutdownTimeout)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			return fmt.Errorf("worker 优雅退出失败: %w", err)

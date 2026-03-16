@@ -13,13 +13,17 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 )
+
+const workerAuthHeader = "X-Worker-Token"
 
 // WorkerDownloadRequest 是 Bot/CLI 调用 Worker 的下载请求体。
 // - mode=index：按用户主页时间线序号下载（需要 username + post_index）
@@ -67,6 +71,47 @@ func (ws *WorkerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	addr := strings.TrimSpace(remoteAddr)
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func (ws *WorkerServer) authorizeRequest(w http.ResponseWriter, r *http.Request) bool {
+	token := strings.TrimSpace(ws.workerAPIToken)
+	if token != "" {
+		presented := strings.TrimSpace(r.Header.Get(workerAuthHeader))
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(token)) != 1 {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"success": false,
+				"message": "未授权访问",
+			})
+			return false
+		}
+		return true
+	}
+
+	if isLoopbackRemoteAddr(r.RemoteAddr) {
+		return true
+	}
+
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"success": false,
+		"message": "请求来源受限：请配置 WORKER_API_TOKEN，或仅从本机访问",
+	})
+	return false
+}
+
 // handleDownload 是 worker 的核心入口：执行下载任务并返回文件路径列表。
 // 该接口设计为同步返回，调用方（Bot）在收到响应后再进行上传。
 func (ws *WorkerServer) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +121,9 @@ func (ws *WorkerServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, WorkerDownloadResponse{Success: false, Message: "仅支持 POST"})
+		return
+	}
+	if !ws.authorizeRequest(w, r) {
 		return
 	}
 
@@ -325,6 +373,9 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+	if !ws.authorizeRequest(w, r) {
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
@@ -447,6 +498,9 @@ func (ws *WorkerServer) handleMonitorCheck(w http.ResponseWriter, r *http.Reques
 			"success": false,
 			"message": "仅支持 POST",
 		})
+		return
+	}
+	if !ws.authorizeRequest(w, r) {
 		return
 	}
 

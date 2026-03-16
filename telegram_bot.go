@@ -56,6 +56,7 @@ type TelegramClient struct {
 	userStates       map[int64]*UserState
 	statesMutex      sync.RWMutex
 	workerBaseURL    string
+	workerAPIToken   string
 	configPath       string
 	shortClient      *http.Client  // 短超时 HTTP 客户端（健康检查等）
 	longClient       *http.Client  // 长超时 HTTP 客户端（下载/更新等耗时请求）
@@ -97,6 +98,7 @@ func NewTelegramClient(config *Config) (*TelegramClient, error) {
 		favoriteAccounts: favoriteAccounts,
 		userStates:       make(map[int64]*UserState),
 		workerBaseURL:    workerBaseURL,
+		workerAPIToken:   strings.TrimSpace(config.WorkerAPIToken),
 		configPath:       "config.json",
 		shortClient:      &http.Client{Timeout: httpHealthCheckTimeout},
 		longClient:       &http.Client{Timeout: httpWorkerCallTimeout},

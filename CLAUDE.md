@@ -24,6 +24,13 @@
 - ✅ 配置管理增强：完整验证 + 环境变量支持 + Docker/K8s 友好
 - ✅ 可观测性增强：结构化日志 + Prometheus Metrics + /metrics 端点
 
+**文档同步补充** (2026-03-16):
+- Worker 接口新增安全策略：配置 `WORKER_API_TOKEN` 时强制 `X-Worker-Token`；未配置时仅允许本机来源访问。
+- Worker 代码文件已拆分为 `worker_server.go` + `worker_handlers.go`（旧文中的 `worker.go` 视为历史命名）。
+- Bot 代码文件已拆分为 `telegram_bot.go` + `telegram_handler_*.go` + `telegram_worker.go`（旧文中的 `bot.go` 视为历史命名）。
+- 守护启动支持 `caffeinate` 自动降级：命令不存在时直接启动 `crawler`，不再因缺少 `caffeinate` 启动失败。
+- 若本文件后续章节与上述补充冲突，以本补充和 `README.md` 为准（后续会分批清理历史段落）。
+
 **生产就绪**: ✅ 可以 7x24 小时稳定运行
 
 ## 核心技术栈
