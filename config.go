@@ -51,10 +51,17 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("加载配置文件失败: %w", err)
 	}
 
-	if config.TelegramBotToken == "" || config.TelegramBotToken == "YOUR_BOT_TOKEN_HERE" {
-		return nil, fmt.Errorf("请在 config.json 中配置有效的 telegram_bot_token")
-	}
+	// 应用默认值
+	applyDefaults(&config)
 
+	// 应用全局配置
+	applyGlobalConfig(&config)
+
+	return &config, nil
+}
+
+// applyDefaults 应用默认值
+func applyDefaults(config *Config) {
 	if strings.TrimSpace(config.WorkerAddr) == "" {
 		config.WorkerAddr = defaultWorkerListenAddr
 	}
@@ -70,7 +77,10 @@ func LoadConfig(path string) (*Config, error) {
 	if config.MonitorCompareTopN <= 0 {
 		config.MonitorCompareTopN = defaultMonitorCompareTopN
 	}
+}
 
+// applyGlobalConfig 应用到全局变量
+func applyGlobalConfig(config *Config) {
 	if config.MaxConcurrentDownloads > 0 {
 		maxConcurrentDownloads = config.MaxConcurrentDownloads
 	}
@@ -78,8 +88,6 @@ func LoadConfig(path string) (*Config, error) {
 	if config.PostsCacheExpiryHours > 0 {
 		postsCacheExpiry = time.Duration(config.PostsCacheExpiryHours) * time.Hour
 	}
-
-	return &config, nil
 }
 
 // SaveConfig 将配置原子写入到指定路径：

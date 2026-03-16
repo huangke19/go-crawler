@@ -215,13 +215,15 @@ func handleBot() {
 	fmt.Println("=== Instagram Telegram Bot ===")
 	fmt.Println()
 
-	config, err := LoadConfig("config.json")
+	config, err := LoadConfigWithEnv("config.json")
 	if err != nil {
 		fmt.Printf("❌ 加载配置失败: %v\n", err)
 		fmt.Println("\n提示:")
 		fmt.Println("1. 复制 config.example.json 为 config.json")
 		fmt.Println("2. 在 config.json 中填入你的 Telegram Bot Token")
 		fmt.Println("3. 可选：配置 allowed_user_ids 限制访问权限")
+		fmt.Println("4. 或者通过环境变量设置：")
+		fmt.Println("   export TELEGRAM_BOT_TOKEN=\"your_token_here\"")
 		os.Exit(1)
 	}
 
