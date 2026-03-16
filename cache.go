@@ -140,6 +140,7 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 	if mediaCacheLoaded {
 		result := mediaCacheMap
 		mediaCacheMu.RUnlock()
+		UpdateCacheSize("media", float64(len(result)))
 		return result, nil
 	}
 	mediaCacheMu.RUnlock()
@@ -149,6 +150,7 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 
 	// 双重检查：可能其他 goroutine 已经加载了
 	if mediaCacheLoaded {
+		UpdateCacheSize("media", float64(len(mediaCacheMap)))
 		return mediaCacheMap, nil
 	}
 
@@ -157,12 +159,14 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 		if os.IsNotExist(err) {
 			mediaCacheMap = make(map[string]*MediaCache)
 			mediaCacheLoaded = true
+			UpdateCacheSize("media", 0)
 			return mediaCacheMap, nil
 		}
 		return nil, err
 	}
 
 	mediaCacheLoaded = true
+	UpdateCacheSize("media", float64(len(mediaCacheMap)))
 	return mediaCacheMap, nil
 }
 
@@ -185,6 +189,7 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 	postsCacheMu.RLock()
 	if postsCacheLoaded {
 		postsCacheMu.RUnlock()
+		UpdateCacheSize("posts", float64(len(postsCacheMap)))
 		return postsCacheMap, nil
 	}
 	postsCacheMu.RUnlock()
@@ -193,6 +198,7 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 	defer postsCacheMu.Unlock()
 
 	if postsCacheLoaded {
+		UpdateCacheSize("posts", float64(len(postsCacheMap)))
 		return postsCacheMap, nil
 	}
 
@@ -201,12 +207,14 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 		if os.IsNotExist(err) {
 			postsCacheMap = make(map[string]*PostsCache)
 			postsCacheLoaded = true
+			UpdateCacheSize("posts", 0)
 			return postsCacheMap, nil
 		}
 		return nil, err
 	}
 
 	postsCacheLoaded = true
+	UpdateCacheSize("posts", float64(len(postsCacheMap)))
 	return postsCacheMap, nil
 }
 
@@ -228,6 +236,7 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 	filesCacheMu.RLock()
 	if filesCacheLoaded {
 		filesCacheMu.RUnlock()
+		UpdateCacheSize("files", float64(len(filesCacheMap)))
 		return filesCacheMap, nil
 	}
 	filesCacheMu.RUnlock()
@@ -236,6 +245,7 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 	defer filesCacheMu.Unlock()
 
 	if filesCacheLoaded {
+		UpdateCacheSize("files", float64(len(filesCacheMap)))
 		return filesCacheMap, nil
 	}
 
@@ -244,12 +254,14 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 		if os.IsNotExist(err) {
 			filesCacheMap = make(map[string]*FilesCache)
 			filesCacheLoaded = true
+			UpdateCacheSize("files", 0)
 			return filesCacheMap, nil
 		}
 		return nil, err
 	}
 
 	filesCacheLoaded = true
+	UpdateCacheSize("files", float64(len(filesCacheMap)))
 	return filesCacheMap, nil
 }
 
@@ -269,6 +281,13 @@ func SaveFilesCache(cache map[string]*FilesCache) error {
 func GetMediaFromCache(shortcode string) (*MediaCache, bool) {
 	cache, _ := LoadMediaCache()
 	media, ok := cache[shortcode]
+	if ok {
+		LogCacheHit("media", shortcode)
+		RecordCacheHit("media")
+	} else {
+		LogCacheMiss("media", shortcode)
+		RecordCacheMiss("media")
+	}
 	return media, ok
 }
 
@@ -284,12 +303,18 @@ func GetPostsFromCache(username string) (*PostsCache, bool) {
 	cache, _ := LoadPostsCache()
 	posts, ok := cache[username]
 	if !ok {
+		LogCacheMiss("posts", username)
+		RecordCacheMiss("posts")
 		return nil, false
 	}
 	// 检查是否过期
 	if time.Now().After(posts.ExpiresAt) {
+		LogCacheMiss("posts", username)
+		RecordCacheMiss("posts")
 		return nil, false
 	}
+	LogCacheHit("posts", username)
+	RecordCacheHit("posts")
 	return posts, true
 }
 
@@ -338,14 +363,20 @@ func GetFilesFromCache(shortcode string) (*FilesCache, bool) {
 	cache, _ := LoadFilesCache()
 	files, ok := cache[shortcode]
 	if !ok {
+		LogCacheMiss("files", shortcode)
+		RecordCacheMiss("files")
 		return nil, false
 	}
 	// 检查文件是否都存在
 	for _, file := range files.Files {
 		if _, err := os.Stat(file); os.IsNotExist(err) {
+			LogCacheMiss("files", shortcode)
+			RecordCacheMiss("files")
 			return nil, false
 		}
 	}
+	LogCacheHit("files", shortcode)
+	RecordCacheHit("files")
 	return files, true
 }
 

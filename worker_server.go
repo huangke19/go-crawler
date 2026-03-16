@@ -27,6 +27,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -86,6 +88,7 @@ func NewWorkerServer() *WorkerServer {
 	mux.HandleFunc("/download", ws.handleDownload)
 	mux.HandleFunc("/check-update", ws.handleCheckUpdate)
 	mux.HandleFunc("/monitor-check", ws.handleMonitorCheck)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	ws.server = &http.Server{
 		Addr:              getWorkerListenAddr(),
@@ -102,8 +105,12 @@ func NewWorkerServer() *WorkerServer {
 // 服务启动后同时启动监控 goroutine。
 func (ws *WorkerServer) Start() error {
 	log.Printf("Worker 服务启动: http://%s", ws.server.Addr)
+	UpdateWorkerHealth(true)
+	LogWorkerHealth(true, "Worker 服务已启动")
 	ws.startMonitorLoop()
 	if err := ws.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		UpdateWorkerHealth(false)
+		LogWorkerHealth(false, fmt.Sprintf("Worker 服务异常: %v", err))
 		return err
 	}
 	return nil
@@ -115,6 +122,8 @@ func (ws *WorkerServer) Start() error {
 // - 关闭 HTTP server
 func (ws *WorkerServer) Shutdown(ctx context.Context) error {
 	log.Println("开始优雅关闭 Worker...")
+	UpdateWorkerHealth(false)
+	LogWorkerHealth(false, "Worker 正在关闭")
 
 	// 停止监控 goroutine
 	select {

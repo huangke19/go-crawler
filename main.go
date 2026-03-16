@@ -215,6 +215,12 @@ func handleBot() {
 	fmt.Println("=== Instagram Telegram Bot ===")
 	fmt.Println()
 
+	// 初始化日志系统
+	if err := InitLogger(GetDefaultLogConfig()); err != nil {
+		fmt.Printf("❌ 初始化日志失败: %v\n", err)
+		os.Exit(1)
+	}
+
 	config, err := LoadConfigWithEnv("config.json")
 	if err != nil {
 		fmt.Printf("❌ 加载配置失败: %v\n", err)
@@ -249,7 +255,14 @@ func handleBot() {
 func handleWorker() {
 	fmt.Println("=== Instagram Worker 服务 ===")
 	fmt.Printf("监听地址: %s\n", getWorkerListenAddr())
+	fmt.Printf("Metrics 端点: http://%s/metrics\n", getWorkerListenAddr())
 	fmt.Println("✅ Worker 已启动，等待任务...")
+
+	// 初始化日志系统
+	if err := InitLogger(GetDefaultLogConfig()); err != nil {
+		fmt.Printf("❌ 初始化日志失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	if err := RunWorker(); err != nil {
 		fmt.Printf("❌ Worker 运行失败: %v\n", err)

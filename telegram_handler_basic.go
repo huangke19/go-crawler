@@ -26,6 +26,8 @@ func (tb *TelegramClient) handleCommand(message *tgbotapi.Message) {
 	args := strings.Fields(message.CommandArguments())
 
 	log.Printf("收到命令: /%s %v (来自: @%s)", command, args, message.From.UserName)
+	LogBotCommand(message.From.ID, message.From.UserName, "/"+command)
+	RecordBotCommand("/" + command)
 
 	switch command {
 	case "start":

@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // MediaInfo 媒体信息
@@ -111,8 +112,13 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 
 	// 发送请求（使用全局客户端）
 	fmt.Println("  正在调用 Instagram GraphQL API...")
+	startTime := time.Now()
 	resp, err := httpClient.Do(req)
+	duration := time.Since(startTime)
+
 	if err != nil {
+		LogAPICall("graphql", duration, false)
+		RecordAPICall("graphql", duration.Seconds(), false)
 		return nil, fmt.Errorf("GraphQL API 请求失败: %v", err)
 	}
 	defer resp.Body.Close()
@@ -121,10 +127,14 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 
 	// 检测 Cookie 失效
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		LogAPICall("graphql", duration, false)
+		RecordAPICall("graphql", duration.Seconds(), false)
 		return nil, fmt.Errorf("Cookie 已失效 (HTTP %d)，请重新登录", resp.StatusCode)
 	}
 
 	if resp.StatusCode != 200 {
+		LogAPICall("graphql", duration, false)
+		RecordAPICall("graphql", duration.Seconds(), false)
 		body, _ := io.ReadAll(resp.Body)
 		bodyStr := string(body)
 		if len(bodyStr) > 200 {
@@ -132,6 +142,9 @@ func ExtractMediaURLs(ctx context.Context, postURL string) (*MediaInfo, error) {
 		}
 		return nil, fmt.Errorf("GraphQL API 返回错误 HTTP %d: %s", resp.StatusCode, bodyStr)
 	}
+
+	LogAPICall("graphql", duration, true)
+	RecordAPICall("graphql", duration.Seconds(), true)
 
 	// 解析 JSON 响应（限制最大 10MB，防止内存耗尽）
 	limitedReader := io.LimitReader(resp.Body, maxJSONResponseSize)
