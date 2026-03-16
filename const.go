@@ -17,7 +17,7 @@ const (
 	httpHealthCheckTimeout = 5 * time.Second
 	httpWorkerCallTimeout  = 3 * time.Minute
 	tlsHandshakeTimeout    = 10 * time.Second
-	browserFastTimeout     = 60 * time.Second
+	browserFastTimeout     = 120 * time.Second // 增加到 120 秒，应对帖子多的账户
 )
 
 // Worker 服务超时

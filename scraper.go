@@ -40,6 +40,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -253,6 +254,20 @@ func GetAllPostLinks(ctx context.Context, minCount int) ([]string, error) {
 
 	if len(finalLinks) == 0 {
 		fmt.Printf("⚠️  未找到任何帖子链接 (HTML 长度: %d 字节)\n", len(htmlContent))
+
+		// 保存 HTML 到文件以便调试
+		debugFile := fmt.Sprintf("debug_%s_%d.html", time.Now().Format("20060102_150405"), len(htmlContent))
+		if err := os.WriteFile(debugFile, []byte(htmlContent), 0644); err == nil {
+			fmt.Printf("⚠️  已保存 HTML 到 %s 以便调试\n", debugFile)
+		}
+
+		// 检查是否是私密账户
+		if strings.Contains(htmlContent, "This Account is Private") ||
+		   strings.Contains(htmlContent, "This account is private") ||
+		   strings.Contains(htmlContent, "该帐户为私密帐户") {
+			return nil, fmt.Errorf("该账户为私密账户，需要先关注才能查看帖子")
+		}
+
 		return nil, fmt.Errorf("未找到任何帖子")
 	}
 

@@ -683,6 +683,12 @@ func (tb *TelegramClient) handleMonitorCheckCallback(callback *tgbotapi.Callback
 		chatID = callback.Message.Chat.ID
 	}
 
+	// 异步执行检测，避免阻塞其他操作
+	go tb.executeMonitorCheck(chatID, username)
+}
+
+// executeMonitorCheck 执行单个账户的监控检测并上传新帖
+func (tb *TelegramClient) executeMonitorCheck(chatID int64, username string) {
 	statusMsg := tb.sendMessage(chatID, fmt.Sprintf("🔍 正在检测 @%s ...", username))
 
 	result, err := tb.requestWorkerMonitorCheck(username)
@@ -696,10 +702,24 @@ func (tb *TelegramClient) handleMonitorCheckCallback(callback *tgbotapi.Callback
 		return
 	}
 
-	tb.editMessage(chatID, statusMsg.MessageID,
-		fmt.Sprintf("✅ @%s 发现 %d 条新帖，正在上传...", username, len(result.NewShortcodes)))
+	// 限制最多显示 3 条新帖，避免一次性发送太多
+	maxShow := 3
+	totalNew := len(result.NewShortcodes)
+	showCount := totalNew
+	if showCount > maxShow {
+		showCount = maxShow
+	}
 
-	for i, sc := range result.NewShortcodes {
+	if totalNew > maxShow {
+		tb.editMessage(chatID, statusMsg.MessageID,
+			fmt.Sprintf("✅ @%s 发现 %d 条新帖，显示最新 %d 条...", username, totalNew, maxShow))
+	} else {
+		tb.editMessage(chatID, statusMsg.MessageID,
+			fmt.Sprintf("✅ @%s 发现 %d 条新帖，正在上传...", username, totalNew))
+	}
+
+	for i := 0; i < showCount; i++ {
+		sc := result.NewShortcodes[i]
 		var files []string
 		if i < len(result.NewFilePaths) {
 			files = result.NewFilePaths[i]
@@ -709,7 +729,7 @@ func (tb *TelegramClient) handleMonitorCheckCallback(callback *tgbotapi.Callback
 		}
 
 		postURL := fmt.Sprintf("https://www.instagram.com/p/%s/", sc)
-		tb.sendMessage(chatID, fmt.Sprintf("🆕 新帖 %d/%d\n%s", i+1, len(result.NewShortcodes), postURL))
+		tb.sendMessage(chatID, fmt.Sprintf("🆕 新帖 %d/%d\n%s", i+1, showCount, postURL))
 
 		for j, filePath := range files {
 			if strings.HasSuffix(filePath, ".mp4") {
@@ -724,7 +744,11 @@ func (tb *TelegramClient) handleMonitorCheckCallback(callback *tgbotapi.Callback
 		}
 	}
 
-	tb.sendMessage(chatID, fmt.Sprintf("✅ 完成！共上传 %d 条新帖", len(result.NewShortcodes)))
+	if totalNew > maxShow {
+		tb.sendMessage(chatID, fmt.Sprintf("✅ 已上传最新 %d 条（共 %d 条新帖）", showCount, totalNew))
+	} else {
+		tb.sendMessage(chatID, fmt.Sprintf("✅ 完成！共上传 %d 条新帖", totalNew))
+	}
 }
 
 // sendFavoritesList 发送常用账户列表及操作按钮。
