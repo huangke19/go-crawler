@@ -566,7 +566,8 @@ func workerPortInt() int {
 	return port
 }
 
-// handleCheckUpdate 处理检查更新请求。\n+// 用于 bot 侧"检查更新"按钮：判断主页最新帖子是否变化，必要时刷新 posts_cache。
+// handleCheckUpdate 处理检查更新请求。
+// 用于 bot 侧"检查更新"按钮：检测新帖 → 自动下载 → 返回文件路径。
 func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	ws.activeReqs.Add(1)
 	defer ws.activeReqs.Done()
@@ -583,12 +584,6 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 
 	type CheckUpdateRequest struct {
 		Username string `json:"username"`
-	}
-	type CheckUpdateResponse struct {
-		Success     bool   `json:"success"`
-		Message     string `json:"message,omitempty"`
-		NeedRefresh bool   `json:"need_refresh"`
-		TotalPosts  int    `json:"total_posts"`
 	}
 
 	var req CheckUpdateRequest
@@ -611,7 +606,7 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 
 	log.Printf("接收检查更新请求: @%s", req.Username)
 
-	needRefresh, totalPosts, err := ws.checkCacheUpdate(req.Username)
+	result, err := ws.checkCacheUpdate(req.Username)
 	if err != nil {
 		log.Printf("检查更新失败: %v", err)
 		writeJSON(w, http.StatusInternalServerError, CheckUpdateResponse{
@@ -621,37 +616,87 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusOK, CheckUpdateResponse{
-		Success:     true,
-		NeedRefresh: needRefresh,
-		TotalPosts:  totalPosts,
-	})
+	writeJSON(w, http.StatusOK, result)
 }
 
-// checkCacheUpdate 检查缓存是否需要更新。
-// 核心逻辑委托给 RefreshPostsCache（scraper.go），此处仅负责浏览器获取与日志输出。
-func (ws *WorkerServer) checkCacheUpdate(username string) (needRefresh bool, totalPosts int, err error) {
+// CheckUpdateResponse 检查更新接口的响应。
+type CheckUpdateResponse struct {
+	Success       bool       `json:"success"`
+	Message       string     `json:"message,omitempty"`
+	NeedRefresh   bool       `json:"need_refresh"`
+	TotalPosts    int        `json:"total_posts"`
+	NewShortcodes []string   `json:"new_shortcodes,omitempty"`
+	NewFilePaths  [][]string `json:"new_file_paths,omitempty"`
+}
+
+// checkCacheUpdate 检查缓存是否需要更新，发现新帖时自动下载。
+// 采用与监控相同的 pre/post diff 模式：
+// 1. 读取旧缓存基线
+// 2. 刷新帖子列表
+// 3. 对比差集找出新 shortcode
+// 4. 逐条下载新帖
+func (ws *WorkerServer) checkCacheUpdate(username string) (*CheckUpdateResponse, error) {
 	log.Printf("  检查 @%s 的缓存状态...", username)
 
 	ctx, err := ws.getBrowser()
 	if err != nil {
-		return false, 0, fmt.Errorf("获取浏览器失败: %w", err)
+		return nil, fmt.Errorf("获取浏览器失败: %w", err)
 	}
 
 	if err := EnsureLoggedIn(ctx); err != nil {
-		return false, 0, fmt.Errorf("登录验证失败: %w", err)
+		return nil, fmt.Errorf("登录验证失败: %w", err)
 	}
 
-	needRefresh, totalPosts, err = RefreshPostsCache(ctx, username, 12)
+	// 1. 读取旧缓存基线
+	var cachedPosts []PostItem
+	if postsCache, ok := GetPostsFromCacheRaw(username); ok && postsCache != nil {
+		cachedPosts = postsCache.Posts
+	}
+
+	// 2. 刷新帖子列表
+	_, totalPosts, err := RefreshPostsCache(ctx, username, 12)
 	if err != nil {
-		return false, 0, err
+		return nil, err
 	}
 
-	if needRefresh {
-		log.Printf("  ✓ 检测到更新，已刷新缓存（共 %d 条）", totalPosts)
-	} else {
+	// 3. 读取刷新后的缓存并对比
+	var latestPosts []PostItem
+	if latestCache, ok := GetPostsFromCacheRaw(username); ok && latestCache != nil {
+		latestPosts = latestCache.Posts
+	}
+
+	newShortcodes := DiffNewShortcodes(cachedPosts, latestPosts)
+
+	if len(newShortcodes) == 0 {
 		log.Printf("  ✓ 缓存已是最新（共 %d 条）", totalPosts)
+		return &CheckUpdateResponse{
+			Success:    true,
+			TotalPosts: totalPosts,
+		}, nil
 	}
 
-	return needRefresh, totalPosts, nil
+	log.Printf("  ✓ 检测到 %d 条新帖，开始下载", len(newShortcodes))
+
+	// 4. 逐条下载新帖（从旧到新）
+	var allFilePaths [][]string
+	var downloadedShortcodes []string
+	for i := len(newShortcodes) - 1; i >= 0; i-- {
+		sc := newShortcodes[i]
+		files, dlErr := ws.downloadByShortcode(sc)
+		if dlErr != nil {
+			log.Printf("  下载失败（%s）: %v", sc, dlErr)
+			continue
+		}
+		downloadedShortcodes = append(downloadedShortcodes, sc)
+		allFilePaths = append(allFilePaths, files)
+		log.Printf("  ✓ 下载完成 %s（%d 个文件）", sc, len(files))
+	}
+
+	return &CheckUpdateResponse{
+		Success:       true,
+		NeedRefresh:   true,
+		TotalPosts:    totalPosts,
+		NewShortcodes: downloadedShortcodes,
+		NewFilePaths:  allFilePaths,
+	}, nil
 }

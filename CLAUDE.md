@@ -702,6 +702,30 @@ tail -f gobot.log
 
 ## 更新记录 (2026-03-15)
 
+### 监控配置热加载与状态清理（2026-03-16）
+
+- 修复点：`monitor.go` 监控循环改为每轮热加载 `config.json`，动态应用 `monitor_accounts` 与 `monitor_interval_min`。
+- 旧行为：仅在 Worker 启动时读取一次监控账户与轮询间隔；运行中修改配置需重启 Worker 才生效。
+- 新行为：
+  - 每轮检测前重新读取配置，新增/删除监控账户无需重启即可生效；
+  - 轮询间隔按最新 `monitor_interval_min` 在下一轮自动生效；
+  - 自动清理 `cache/monitor_state.json` 中已移除账户的状态，避免状态文件膨胀。
+- 容错：配置读取失败时，本轮检测跳过并记录日志，使用兜底间隔继续后续轮询，避免监控 goroutine 退出。
+- 影响范围：Worker 监控链路（`startMonitorLoop` / `runMonitorCycle` / `checkAllAccounts`）。
+
+### 监控基线切换为 posts_cache（2026-03-16）
+
+- 修复点：`monitor.go` 不再使用单条 `monitor_state.json` 做“最新帖对比”，改为“实时抓取前 N 条 + `posts_cache` 差集补抓”。
+- 根因：旧方案仅记录 1 条 shortcode，Worker 停机期间若目标账户发布多条新帖，重启后只能识别最新一条，存在漏检。
+- 新逻辑：
+  - 每轮对每个监控账户调用 `RefreshPostsCache(ctx, username, N)` 刷新主页前 N 条缓存；
+  - 以刷新前 `posts_cache` 为旧基线、刷新后为新快照，按 shortcode 集合差集找出新增帖子；
+  - 对新增 shortcode 逐条调用 `downloadByShortcode()`，按时间顺序补抓并推送；
+  - 首次无基线时仅初始化 `posts_cache`，不发送历史洪泛通知。
+- 相关变更：
+  - `/monitor` 状态展示改为读取 `posts_cache`（最新 shortcode + `UpdatedAt`）；
+  - 删除代码中对 `monitor_state` 的运行时依赖与引用。
+
 ### check-update 误报修复
 
 - 修复点：`RefreshPostsCache()` 不再把“`posts_cache` 过期后重建缓存”判定为“有新帖子”。
@@ -711,7 +735,20 @@ tail -f gobot.log
   - 仅当最新帖子列表（对比窗口内）出现缓存中不存在的 shortcode 时，才返回“有更新”。
   - 缓存过期但内容未变化时，只刷新缓存有效期，不再提示有新帖。
 - 影响范围：CLI `crawler check-update|cu` 与 Telegram “🔄 检查更新”按钮。
+### check-update 多帖下载增强（2026-03-16）
 
+- 修复点：check-update 不再只返回"有更新"布尔值，改为自动下载所有新帖。
+- 根因：旧逻辑仅检测是否有更新，用户需要手动逐条下载新帖。
+- 新逻辑（与监控模块统一的 pre/post diff 模式）：
+  - 读取旧 `posts_cache` 基线 → 刷新帖子列表 → `DiffNewShortcodes()` 差集对比 → 逐条 `downloadByShortcode()` 补抓。
+  - Worker `/check-update` 响应新增 `new_shortcodes` 和 `new_file_paths` 字段。
+  - Bot 侧收到新帖后自动上传每条帖子的文件到 Telegram。
+  - CLI 侧发现新帖后自动下载并保存到缓存。
+- 影响范围：
+  - `worker.go`：`handleCheckUpdate()` / `checkCacheUpdate()` 重构，新增 `CheckUpdateResponse` 结构体。
+  - `telegram_worker.go`：`executeRefreshCache()` / `requestWorkerCheckUpdate()` 重构。
+  - `main.go`：`handleCheckUpdate()` 重构。
+  - `monitor.go`：导出 `DiffNewShortcodes()` 供各模块共用。
 ### 健壮性评分
 
 **从 6.5/10 提升到 9.2/10** (+42%)

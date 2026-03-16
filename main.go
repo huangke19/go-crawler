@@ -248,8 +248,8 @@ func handleWorker() {
 	}
 }
 
-// handleCheckUpdate 检查指定用户是否有新帖子，并刷新帖子列表缓存。
-// 核心逻辑委托给 RefreshPostsCache（scraper.go），此处仅负责 CLI 交互。
+// handleCheckUpdate 检查指定用户是否有新帖子，发现新帖时自动下载。
+// 核心逻辑：读取旧缓存 → 刷新帖子列表 → 差集对比 → 逐条下载。
 func handleCheckUpdate() {
 	if len(os.Args) < 3 {
 		fmt.Println("用法: crawler check-update <username>")
@@ -276,16 +276,66 @@ func handleCheckUpdate() {
 		os.Exit(1)
 	}
 
+	// 1. 读取旧缓存基线
+	var cachedPosts []PostItem
+	if postsCache, ok := GetPostsFromCacheRaw(username); ok && postsCache != nil {
+		cachedPosts = postsCache.Posts
+	}
+
+	// 2. 刷新帖子列表
 	fmt.Println("正在检查更新...")
-	needRefresh, totalPosts, err := RefreshPostsCache(ctx, username, 12)
+	_, totalPosts, err := RefreshPostsCache(ctx, username, 12)
 	if err != nil {
 		fmt.Printf("❌ 检查更新失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	if needRefresh {
-		fmt.Printf("✓ 检测到新帖子！已更新缓存（共 %d 条帖子）\n", totalPosts)
-	} else {
-		fmt.Printf("✓ 已是最新，无新帖子（共 %d 条帖子）\n", totalPosts)
+	// 3. 对比差集
+	var latestPosts []PostItem
+	if latestCache, ok := GetPostsFromCacheRaw(username); ok && latestCache != nil {
+		latestPosts = latestCache.Posts
 	}
+
+	newShortcodes := DiffNewShortcodes(cachedPosts, latestPosts)
+
+	if len(newShortcodes) == 0 {
+		fmt.Printf("✓ 已是最新，无新帖子（共 %d 条帖子）\n", totalPosts)
+		return
+	}
+
+	fmt.Printf("✓ 检测到 %d 条新帖子（共 %d 条帖子），开始下载...\n\n", len(newShortcodes), totalPosts)
+
+	// 4. 逐条下载（从旧到新）
+	for i := len(newShortcodes) - 1; i >= 0; i-- {
+		sc := newShortcodes[i]
+		postURL := "https://www.instagram.com/p/" + sc + "/"
+		fmt.Printf("  下载 [%d/%d] %s\n", len(newShortcodes)-i, len(newShortcodes), postURL)
+
+		mediaInfo, extractErr := ExtractMediaURLs(ctx, postURL)
+		if extractErr != nil {
+			fmt.Printf("  ❌ 提取媒体失败: %v\n", extractErr)
+			continue
+		}
+
+		files, dlErr := downloadMediaByShortcode(sc, mediaInfo)
+		if dlErr != nil {
+			fmt.Printf("  ❌ 下载失败: %v\n", dlErr)
+			continue
+		}
+
+		// 保存到缓存
+		SaveMediaToCache(sc, &MediaCache{
+			Type:  mediaInfo.Type,
+			URLs:  mediaInfo.URLs,
+			Types: mediaInfo.Types,
+		})
+		SaveFilesToCache(sc, &FilesCache{
+			Files:        files,
+			DownloadedAt: time.Now(),
+		})
+
+		fmt.Printf("  ✓ 完成（%d 个文件）\n", len(files))
+	}
+
+	fmt.Printf("\n✓ 全部完成！共下载 %d 条新帖\n", len(newShortcodes))
 }

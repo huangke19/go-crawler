@@ -636,23 +636,20 @@ func (tb *TelegramClient) handleMonitor(message *tgbotapi.Message) {
 		return
 	}
 
-	// 读取监控状态
-	monitorStateMu.Lock()
-	states, _ := loadMonitorStates()
-	monitorStateMu.Unlock()
-
 	text := fmt.Sprintf("📡 监控状态（每 %d 分钟检查一次）\n\n", config.MonitorIntervalMin)
 	for _, username := range config.MonitorAccounts {
-		state, ok := states[username]
-		if !ok || state.LastShortcode == "" {
+		postsCache, ok := GetPostsFromCacheRaw(username)
+		if !ok || postsCache == nil || len(postsCache.Posts) == 0 {
 			text += fmt.Sprintf("• @%s — 尚未检测\n", username)
 			continue
 		}
-		lastCheck := state.LastCheck
-		if t, err := time.Parse(time.RFC3339, state.LastCheck); err == nil {
-			lastCheck = t.Format("01-02 15:04")
+
+		latestShortcode := postsCache.Posts[0].Shortcode
+		lastCheck := "-"
+		if !postsCache.UpdatedAt.IsZero() {
+			lastCheck = postsCache.UpdatedAt.Format("01-02 15:04")
 		}
-		text += fmt.Sprintf("• @%s\n  最新: %s\n  检测: %s\n", username, state.LastShortcode, lastCheck)
+		text += fmt.Sprintf("• @%s\n  最新: %s\n  检测: %s\n", username, latestShortcode, lastCheck)
 	}
 
 	tb.sendMessage(message.Chat.ID, text)

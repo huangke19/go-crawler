@@ -26,19 +26,22 @@ import (
 )
 
 type Config struct {
-	TelegramBotToken  string   `json:"telegram_bot_token"`
-	AllowedUserIDs    []int64  `json:"allowed_user_ids"`
-	AdminUserIDs      []int64  `json:"admin_user_ids"`
-	FavoriteAccounts  []string `json:"favorite_accounts"`
-	WorkerAddr        string   `json:"worker_addr"`
-	MonitorAccounts   []string `json:"monitor_accounts"`    // 监控的账户列表
-	MonitorIntervalMin int     `json:"monitor_interval_min"` // 轮询间隔（分钟），默认 30
+	TelegramBotToken   string   `json:"telegram_bot_token"`
+	AllowedUserIDs     []int64  `json:"allowed_user_ids"`
+	AdminUserIDs       []int64  `json:"admin_user_ids"`
+	FavoriteAccounts   []string `json:"favorite_accounts"`
+	WorkerAddr         string   `json:"worker_addr"`
+	MonitorAccounts    []string `json:"monitor_accounts"`      // 监控的账户列表
+	MonitorIntervalMin int      `json:"monitor_interval_min"`  // 轮询间隔（分钟），默认 30
+	MonitorCompareTopN int      `json:"monitor_compare_top_n"` // 监控对比前N条，默认20
 }
 
 // LoadConfig 从指定路径读取 `config.json` 并做必要的兼容与默认值填充：
 // - `telegram_bot_token` 必须存在且不可为占位符；
 // - `worker_addr` 为空时使用默认监听地址；
 // - `admin_user_ids` 未配置但 `allowed_user_ids` 有值时，自动回退为同一组 ID（兼容旧配置）。
+const defaultMonitorCompareTopN = 20
+
 func LoadConfig(path string) (*Config, error) {
 	var config Config
 	if err := loadJSONFile(path, &config); err != nil {
@@ -59,6 +62,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	if config.MonitorIntervalMin <= 0 {
 		config.MonitorIntervalMin = defaultMonitorIntervalMin
+	}
+
+	if config.MonitorCompareTopN <= 0 {
+		config.MonitorCompareTopN = defaultMonitorCompareTopN
 	}
 
 	return &config, nil

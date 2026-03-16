@@ -204,73 +204,92 @@ func (tb *TelegramClient) requestWorkerDownloadByShortcode(shortcode string) ([]
 	return result.FilePaths, nil
 }
 
-// executeRefreshCache 执行缓存刷新检查
+// executeRefreshCache 执行缓存刷新检查，发现新帖时自动下载并上传。
 func (tb *TelegramClient) executeRefreshCache(chatID int64, messageID int, username string) {
-	// 更新消息状态
 	tb.editMessage(chatID, messageID, fmt.Sprintf("🔄 正在检查 @%s 的更新...", username))
 
-	// 请求 worker 检查更新
-	needRefresh, _, err := tb.requestWorkerCheckUpdate(username)
+	result, err := tb.requestWorkerCheckUpdate(username)
 	if err != nil {
 		tb.editMessage(chatID, messageID, fmt.Sprintf("❌ 检查更新失败: %v", err))
 		return
 	}
 
-	if needRefresh {
-		// 有更新，显示结果
-		text := fmt.Sprintf("✅ @%s 有新帖子！已更新缓存", username)
-		tb.editMessage(chatID, messageID, text)
-	} else {
-		// 无更新
-		text := fmt.Sprintf("✅ @%s 已是最新", username)
-		tb.editMessage(chatID, messageID, text)
+	if !result.NeedRefresh || len(result.NewShortcodes) == 0 {
+		tb.editMessage(chatID, messageID, fmt.Sprintf("✅ @%s 已是最新", username))
+		time.Sleep(500 * time.Millisecond)
+		tb.showIndexSelection(chatID, username)
+		return
 	}
 
-	// 重新显示序号选择按钮（发送新消息）
+	tb.editMessage(chatID, messageID,
+		fmt.Sprintf("✅ @%s 检测到 %d 条新帖，正在上传...", username, len(result.NewShortcodes)))
+
+	// 逐条上传新帖文件
+	for i, sc := range result.NewShortcodes {
+		var files []string
+		if i < len(result.NewFilePaths) {
+			files = result.NewFilePaths[i]
+		}
+		if len(files) == 0 {
+			continue
+		}
+
+		postURL := fmt.Sprintf("https://www.instagram.com/p/%s/", sc)
+		tb.sendMessage(chatID, fmt.Sprintf("🆕 新帖 %d/%d\n%s", i+1, len(result.NewShortcodes), postURL))
+
+		for j, filePath := range files {
+			if strings.HasSuffix(filePath, ".mp4") {
+				tb.sendChatAction(chatID, "upload_video")
+			} else {
+				tb.sendChatAction(chatID, "upload_photo")
+			}
+			if err := tb.sendFile(chatID, filePath); err != nil {
+				log.Printf("上传文件失败 %s: %v", filePath, err)
+				tb.sendMessage(chatID, fmt.Sprintf("❌ 上传文件 %d 失败", j+1))
+			}
+		}
+	}
+
+	tb.sendMessage(chatID, fmt.Sprintf("✅ 全部完成！共 %d 条新帖已上传", len(result.NewShortcodes)))
+
 	time.Sleep(500 * time.Millisecond)
 	tb.showIndexSelection(chatID, username)
 }
 
 // requestWorkerCheckUpdate 请求 Worker 检查更新
-func (tb *TelegramClient) requestWorkerCheckUpdate(username string) (needRefresh bool, totalPosts int, err error) {
+func (tb *TelegramClient) requestWorkerCheckUpdate(username string) (*CheckUpdateResponse, error) {
 	type CheckUpdateRequest struct {
 		Username string `json:"username"`
-	}
-	type CheckUpdateResponse struct {
-		Success     bool   `json:"success"`
-		Message     string `json:"message,omitempty"`
-		NeedRefresh bool   `json:"need_refresh"`
-		TotalPosts  int    `json:"total_posts"`
 	}
 
 	payload := CheckUpdateRequest{Username: username}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return false, 0, fmt.Errorf("构建请求失败: %w", err)
+		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}
 
 	resp, err := tb.longClient.Post(tb.workerBaseURL+"/check-update", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return false, 0, fmt.Errorf("worker 请求失败: %w", err)
+		return nil, fmt.Errorf("worker 请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, 0, fmt.Errorf("读取 worker 响应失败: %w", err)
+		return nil, fmt.Errorf("读取 worker 响应失败: %w", err)
 	}
 
 	var result CheckUpdateResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return false, 0, fmt.Errorf("解析 worker 响应失败: %w", err)
+		return nil, fmt.Errorf("解析 worker 响应失败: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK || !result.Success {
 		if result.Message == "" {
 			result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		return false, 0, fmt.Errorf("%s", result.Message)
+		return nil, fmt.Errorf("%s", result.Message)
 	}
 
-	return result.NeedRefresh, result.TotalPosts, nil
+	return &result, nil
 }

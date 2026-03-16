@@ -16,7 +16,7 @@ const (
 	httpIdleConnTimeout    = 90 * time.Second
 	httpHealthCheckTimeout = 5 * time.Second
 	httpWorkerCallTimeout  = 3 * time.Minute
-	tlsHandshakeTimeout   = 10 * time.Second
+	tlsHandshakeTimeout    = 10 * time.Second
 	browserFastTimeout     = 60 * time.Second
 )
 
@@ -42,8 +42,8 @@ const (
 
 // 缓存过期时间
 const (
-	postsCacheExpiry    = 24 * time.Hour
-	historyCacheTTL     = 1 * time.Minute
+	postsCacheExpiry = 24 * time.Hour
+	historyCacheTTL  = 1 * time.Minute
 )
 
 // 限制
@@ -54,6 +54,5 @@ const (
 
 // 监控
 const (
-	monitorStateFile         = "cache/monitor_state.json"
 	defaultMonitorIntervalMin = 30
 )

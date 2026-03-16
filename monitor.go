@@ -4,19 +4,12 @@
 //
 // 职责：
 //   - 定时轮询 config.json 中的 monitor_accounts 列表
-//   - 检测最新帖子 shortcode 是否变化
-//   - 有新帖时自动下载并通过 Telegram 推送文件
-//
-// 核心流程（每个账户）：
-//   1. 使用 Worker 共享的浏览器上下文访问用户主页
-//   2. 获取第 1 条帖子（= 最新帖子）的 shortcode
-//   3. 与 monitor_state.json 中的上次 shortcode 对比
-//   4. 首次运行（LastShortcode 为空）→ 仅初始化状态，不通知
-//   5. 检测到新帖 → 下载媒体文件 → 发送 Telegram 通知 + 文件
+//   - 每轮实时抓取用户主页前 N 条帖子
+//   - 与 posts_cache.json 中的历史列表做差集对比
+//   - 对停机期间遗漏的多条新帖执行补抓并推送
 //
 // 并发安全：
 //   - 监控 goroutine 与 HTTP 下载请求共享 ws.browserMu，天然串行
-//   - monitorStateMu 保护 monitor_state.json 文件读写
 //   - stopCh 通道控制优雅退出
 //
 // ============================================================================
@@ -25,7 +18,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -34,81 +26,98 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
-// MonitorState 记录单个账户的上次检测状态。
-type MonitorState struct {
-	LastShortcode string `json:"last_shortcode"`
-	LastCheck     string `json:"last_check"`
+// normalizeMonitorAccounts 规范化监控账户列表：去空白、去重、忽略空值。
+func normalizeMonitorAccounts(accounts []string) []string {
+	if len(accounts) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(accounts))
+	seen := make(map[string]struct{}, len(accounts))
+	for _, account := range accounts {
+		username := strings.TrimSpace(account)
+		if username == "" {
+			continue
+		}
+		if _, exists := seen[username]; exists {
+			continue
+		}
+		seen[username] = struct{}{}
+		normalized = append(normalized, username)
+	}
+
+	return normalized
 }
 
-// monitorStates 是所有账户状态的 map（username -> MonitorState）。
-type monitorStates map[string]MonitorState
-
-// monitorStateMu 保护 monitor_state.json 的并发读写。
-var monitorStateMu sync.Mutex
-
-// loadMonitorStates 从磁盘读取 monitor_state.json。
-// 文件不存在时返回空 map（正常的首次运行情况）。
-func loadMonitorStates() (monitorStates, error) {
-	states := make(monitorStates)
-	data, err := os.ReadFile(monitorStateFile)
-	if os.IsNotExist(err) {
-		return states, nil
-	}
+// loadMonitorConfigSnapshot 读取最新 monitor 相关配置（热加载）。
+func (ws *WorkerServer) loadMonitorConfigSnapshot() ([]string, time.Duration, int, error) {
+	cfg, err := LoadConfig("config.json")
 	if err != nil {
-		return nil, fmt.Errorf("读取监控状态文件失败: %w", err)
+		return nil, 0, 0, err
 	}
-	if err := json.Unmarshal(data, &states); err != nil {
-		return nil, fmt.Errorf("解析监控状态失败: %w", err)
+
+	accounts := normalizeMonitorAccounts(cfg.MonitorAccounts)
+	interval := time.Duration(cfg.MonitorIntervalMin) * time.Minute
+	if interval <= 0 {
+		interval = time.Duration(defaultMonitorIntervalMin) * time.Minute
 	}
-	return states, nil
+	topN := cfg.MonitorCompareTopN
+	if topN <= 0 {
+		topN = defaultMonitorCompareTopN
+	}
+
+	return accounts, interval, topN, nil
 }
 
-// saveMonitorStates 将状态原子写入 monitor_state.json。
-func saveMonitorStates(states monitorStates) error {
-	data, err := json.MarshalIndent(states, "", "  ")
+// getFallbackMonitorInterval 返回配置读取失败时的兜底轮询间隔。
+func (ws *WorkerServer) getFallbackMonitorInterval() time.Duration {
+	if ws.config != nil && ws.config.MonitorIntervalMin > 0 {
+		return time.Duration(ws.config.MonitorIntervalMin) * time.Minute
+	}
+	return time.Duration(defaultMonitorIntervalMin) * time.Minute
+}
+
+// runMonitorCycle 执行一轮监控：热加载配置并检测账户。
+func (ws *WorkerServer) runMonitorCycle() (time.Duration, error) {
+	accounts, interval, topN, err := ws.loadMonitorConfigSnapshot()
 	if err != nil {
-		return fmt.Errorf("序列化监控状态失败: %w", err)
+		return ws.getFallbackMonitorInterval(), fmt.Errorf("加载配置失败: %w", err)
 	}
-	tmp := monitorStateFile + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return fmt.Errorf("写入监控状态临时文件失败: %w", err)
-	}
-	if err := os.Rename(tmp, monitorStateFile); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("替换监控状态文件失败: %w", err)
-	}
-	return nil
+
+	ws.checkAllAccounts(accounts, topN)
+	return interval, nil
 }
 
 // startMonitorLoop 启动监控后台 goroutine。
-// 每隔 config.MonitorIntervalMin 分钟检测一次所有 MonitorAccounts。
+// 每轮检测前热加载 monitor_accounts 与 monitor_interval_min。
 // 通过 ws.stopCh 接收关闭信号，优雅退出。
 func (ws *WorkerServer) startMonitorLoop() {
-	if ws.config == nil || len(ws.config.MonitorAccounts) == 0 {
-		log.Println("监控：未配置监控账户（monitor_accounts），跳过启动")
-		return
-	}
-
-	interval := time.Duration(ws.config.MonitorIntervalMin) * time.Minute
-	log.Printf("监控启动：共 %d 个账户，每 %d 分钟检查一次",
-		len(ws.config.MonitorAccounts), ws.config.MonitorIntervalMin)
+	log.Println("监控启动：已启用配置热加载")
 
 	go func() {
-		// 启动后立即执行一次，之后按 interval 轮询
-		ws.checkAllAccounts()
-
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		interval, err := ws.runMonitorCycle()
+		if err != nil {
+			log.Printf("监控：%v", err)
+		}
 
 		for {
+			timer := time.NewTimer(interval)
 			select {
-			case <-ticker.C:
-				ws.checkAllAccounts()
+			case <-timer.C:
+				interval, err = ws.runMonitorCycle()
+				if err != nil {
+					log.Printf("监控：%v", err)
+				}
 			case <-ws.stopCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
 				log.Println("监控：收到停止信号，退出监控 goroutine")
 				return
 			}
@@ -117,31 +126,65 @@ func (ws *WorkerServer) startMonitorLoop() {
 }
 
 // checkAllAccounts 依次检测所有监控账户。
-func (ws *WorkerServer) checkAllAccounts() {
-	if ws.config == nil {
+func (ws *WorkerServer) checkAllAccounts(accounts []string, topN int) {
+	if len(accounts) == 0 {
 		return
 	}
-	for _, username := range ws.config.MonitorAccounts {
-		if err := ws.checkAccount(username); err != nil {
+	for _, username := range accounts {
+		if err := ws.checkAccount(username, topN); err != nil {
 			log.Printf("监控：@%s 检测失败: %v", username, err)
 		}
 	}
 }
 
+func limitPosts(posts []PostItem, topN int) []PostItem {
+	if len(posts) <= topN {
+		return posts
+	}
+	return posts[:topN]
+}
+
+// DiffNewShortcodes 对比缓存与最新帖子列表，返回新增 shortcodes。
+// 导出供 check-update 和监控共用。
+func DiffNewShortcodes(cachedPosts, latestPosts []PostItem) []string {
+	if len(latestPosts) == 0 {
+		return nil
+	}
+
+	cachedSet := make(map[string]struct{}, len(cachedPosts))
+	for _, post := range cachedPosts {
+		if post.Shortcode != "" {
+			cachedSet[post.Shortcode] = struct{}{}
+		}
+	}
+
+	var newShortcodes []string
+	seen := make(map[string]struct{}, len(latestPosts))
+	for _, post := range latestPosts {
+		if post.Shortcode == "" {
+			continue
+		}
+		if _, exists := seen[post.Shortcode]; exists {
+			continue
+		}
+		seen[post.Shortcode] = struct{}{}
+		if _, exists := cachedSet[post.Shortcode]; !exists {
+			newShortcodes = append(newShortcodes, post.Shortcode)
+		}
+	}
+
+	return newShortcodes
+}
+
 // checkAccount 检测单个账户是否有新帖。
 //
 // 流程：
-// 1. 获取浏览器上下文，访问用户主页，获取第 1 条帖子 URL
-// 2. 提取 latestShortcode
-// 3. 与上次记录对比：
-//   - 首次运行（LastShortcode 为空）→ 仅保存状态，不通知
-//   - shortcode 变化 → 下载并通知
-//
-// 4. 更新并保存 monitor state
-func (ws *WorkerServer) checkAccount(username string) error {
+// 1. 访问用户主页并刷新 posts_cache（前 N 条）
+// 2. 将"最新前 N 条"与"旧缓存前 N 条"做差集
+// 3. 对新增 shortcode 逐条补抓并通知（支持停机期间多条补抓）
+func (ws *WorkerServer) checkAccount(username string, topN int) error {
 	log.Printf("监控：开始检测 @%s", username)
 
-	// 获取浏览器，访问用户主页
 	ctx, err := ws.getBrowser()
 	if err != nil {
 		return fmt.Errorf("获取浏览器失败: %w", err)
@@ -151,70 +194,47 @@ func (ws *WorkerServer) checkAccount(username string) error {
 		return fmt.Errorf("登录验证失败: %w", err)
 	}
 
-	if err := NavigateToUser(ctx, username); err != nil {
-		return fmt.Errorf("访问主页失败: %w", err)
+	var cachedPosts []PostItem
+	if postsCache, ok := GetPostsFromCacheRaw(username); ok && postsCache != nil {
+		cachedPosts = limitPosts(postsCache.Posts, topN)
 	}
 
-	// 获取最新帖子 URL（第 1 条）
-	postURL, err := GetPostByIndex(ctx, 1)
-	if err != nil {
-		return fmt.Errorf("获取最新帖子失败: %w", err)
+	if _, _, err := RefreshPostsCache(ctx, username, topN); err != nil {
+		return fmt.Errorf("刷新帖子缓存失败: %w", err)
 	}
 
-	latestShortcode := extractShortcode(postURL)
-	if latestShortcode == "" {
-		return fmt.Errorf("无法从 URL 提取 shortcode: %s", postURL)
+	latestCache, ok := GetPostsFromCacheRaw(username)
+	if !ok || latestCache == nil || len(latestCache.Posts) == 0 {
+		return fmt.Errorf("刷新后帖子缓存为空")
+	}
+	latestPosts := limitPosts(latestCache.Posts, topN)
+
+	if len(cachedPosts) == 0 {
+		log.Printf("监控：@%s 首次建立 posts_cache 基线（%d 条）", username, len(latestPosts))
+		return nil
 	}
 
-	log.Printf("监控：@%s 最新帖子 shortcode = %s", username, latestShortcode)
-
-	// 读取上次状态
-	monitorStateMu.Lock()
-	states, err := loadMonitorStates()
-	monitorStateMu.Unlock()
-	if err != nil {
-		log.Printf("监控：读取状态文件失败（忽略，使用空状态）: %v", err)
-		states = make(monitorStates)
+	newShortcodes := DiffNewShortcodes(cachedPosts, latestPosts)
+	if len(newShortcodes) == 0 {
+		log.Printf("监控：@%s 无新帖（前 %d 条与缓存一致）", username, topN)
+		return nil
 	}
 
-	prevState := states[username]
+	log.Printf("监控：@%s 检测到 %d 条新帖，开始补抓", username, len(newShortcodes))
 
-	// 对比 shortcode
-	if prevState.LastShortcode == "" {
-		// 首次运行：只初始化状态，不通知
-		log.Printf("监控：@%s 首次运行，初始化状态（shortcode: %s）", username, latestShortcode)
-	} else if prevState.LastShortcode != latestShortcode {
-		// 发现新帖
-		log.Printf("监控：@%s 发现新帖！旧=%s 新=%s", username, prevState.LastShortcode, latestShortcode)
+	for i := len(newShortcodes) - 1; i >= 0; i-- {
+		shortcode := newShortcodes[i]
 
-		// 下载媒体文件
-		filePaths, downloadErr := ws.downloadByShortcode(latestShortcode)
+		filePaths, downloadErr := ws.downloadByShortcode(shortcode)
 		if downloadErr != nil {
-			log.Printf("监控：@%s 下载失败: %v（仍发送文字通知）", username, downloadErr)
+			log.Printf("监控：@%s 下载失败（%s）: %v", username, shortcode, downloadErr)
+			continue
 		}
 
-		// 发送通知
 		if ws.config != nil && len(ws.config.AdminUserIDs) > 0 {
-			ws.notifyNewPost(username, latestShortcode, ws.config.AdminUserIDs, filePaths)
+			ws.notifyNewPost(username, shortcode, ws.config.AdminUserIDs, filePaths)
 		}
-	} else {
-		log.Printf("监控：@%s 无新帖（shortcode 未变化）", username)
 	}
-
-	// 更新状态（重新加载以避免覆盖并发写入）
-	monitorStateMu.Lock()
-	freshStates, loadErr := loadMonitorStates()
-	if loadErr != nil {
-		freshStates = states
-	}
-	freshStates[username] = MonitorState{
-		LastShortcode: latestShortcode,
-		LastCheck:     time.Now().Format(time.RFC3339),
-	}
-	if err := saveMonitorStates(freshStates); err != nil {
-		log.Printf("监控：@%s 保存状态失败: %v", username, err)
-	}
-	monitorStateMu.Unlock()
 
 	return nil
 }
