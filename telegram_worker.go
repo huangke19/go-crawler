@@ -293,3 +293,41 @@ func (tb *TelegramClient) requestWorkerCheckUpdate(username string) (*CheckUpdat
 
 	return &result, nil
 }
+
+// requestWorkerMonitorCheck 请求 Worker 对指定账户立即执行一次监控检测。
+func (tb *TelegramClient) requestWorkerMonitorCheck(username string) (*MonitorCheckResponse, error) {
+	type MonitorCheckRequest struct {
+		Username string `json:"username"`
+	}
+
+	payload := MonitorCheckRequest{Username: username}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	resp, err := tb.longClient.Post(tb.workerBaseURL+"/monitor-check", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("worker 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取 worker 响应失败: %w", err)
+	}
+
+	var result MonitorCheckResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("解析 worker 响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK || !result.Success {
+		if result.Message == "" {
+			result.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("%s", result.Message)
+	}
+
+	return &result, nil
+}

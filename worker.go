@@ -139,6 +139,7 @@ func NewWorkerServer() *WorkerServer {
 	mux.HandleFunc("/health", ws.handleHealth)
 	mux.HandleFunc("/download", ws.handleDownload)
 	mux.HandleFunc("/check-update", ws.handleCheckUpdate)
+	mux.HandleFunc("/monitor-check", ws.handleMonitorCheck)
 
 	ws.server = &http.Server{
 		Addr:              getWorkerListenAddr(),
@@ -617,6 +618,129 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// MonitorCheckResponse 单账户立即检测接口的响应。
+type MonitorCheckResponse struct {
+	Success       bool       `json:"success"`
+	Message       string     `json:"message,omitempty"`
+	NewShortcodes []string   `json:"new_shortcodes,omitempty"`
+	NewFilePaths  [][]string `json:"new_file_paths,omitempty"`
+}
+
+// handleMonitorCheck 立即对指定账户执行一次监控检测。
+func (ws *WorkerServer) handleMonitorCheck(w http.ResponseWriter, r *http.Request) {
+	ws.activeReqs.Add(1)
+	defer ws.activeReqs.Done()
+
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"success": false,
+			"message": "仅支持 POST",
+		})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	type MonitorCheckRequest struct {
+		Username string `json:"username"`
+	}
+
+	var req MonitorCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, MonitorCheckResponse{
+			Success: false, Message: "请求体格式错误",
+		})
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		writeJSON(w, http.StatusBadRequest, MonitorCheckResponse{
+			Success: false, Message: "username 不能为空",
+		})
+		return
+	}
+
+	log.Printf("立即检测请求: @%s", req.Username)
+
+	cfg, err := LoadConfig("config.json")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, MonitorCheckResponse{
+			Success: false, Message: "加载配置失败",
+		})
+		return
+	}
+	topN := cfg.MonitorCompareTopN
+	if topN <= 0 {
+		topN = defaultMonitorCompareTopN
+	}
+
+	ctx, ctxErr := ws.getBrowser()
+	if ctxErr != nil {
+		writeJSON(w, http.StatusInternalServerError, MonitorCheckResponse{
+			Success: false, Message: ctxErr.Error(),
+		})
+		return
+	}
+	if loginErr := EnsureLoggedIn(ctx); loginErr != nil {
+		writeJSON(w, http.StatusInternalServerError, MonitorCheckResponse{
+			Success: false, Message: loginErr.Error(),
+		})
+		return
+	}
+
+	// 读取旧缓存基线
+	var cachedPosts []PostItem
+	if postsCache, ok := GetPostsFromCacheRaw(req.Username); ok && postsCache != nil {
+		cachedPosts = limitPosts(postsCache.Posts, topN)
+	}
+
+	// 刷新帖子列表
+	if _, _, err := RefreshPostsCache(ctx, req.Username, topN); err != nil {
+		writeJSON(w, http.StatusInternalServerError, MonitorCheckResponse{
+			Success: false, Message: err.Error(),
+		})
+		return
+	}
+
+	latestCache, ok := GetPostsFromCacheRaw(req.Username)
+	if !ok || latestCache == nil {
+		writeJSON(w, http.StatusOK, MonitorCheckResponse{Success: true})
+		return
+	}
+	latestPosts := limitPosts(latestCache.Posts, topN)
+
+	// 首次建立基线
+	if len(cachedPosts) == 0 {
+		writeJSON(w, http.StatusOK, MonitorCheckResponse{Success: true})
+		return
+	}
+
+	newShortcodes := DiffNewShortcodes(cachedPosts, latestPosts)
+	if len(newShortcodes) == 0 {
+		writeJSON(w, http.StatusOK, MonitorCheckResponse{Success: true})
+		return
+	}
+
+	var allFilePaths [][]string
+	var downloadedShortcodes []string
+	for i := len(newShortcodes) - 1; i >= 0; i-- {
+		sc := newShortcodes[i]
+		files, dlErr := ws.downloadByShortcode(sc)
+		if dlErr != nil {
+			log.Printf("立即检测：下载失败（%s）: %v", sc, dlErr)
+			continue
+		}
+		downloadedShortcodes = append(downloadedShortcodes, sc)
+		allFilePaths = append(allFilePaths, files)
+	}
+
+	writeJSON(w, http.StatusOK, MonitorCheckResponse{
+		Success:       true,
+		NewShortcodes: downloadedShortcodes,
+		NewFilePaths:  allFilePaths,
+	})
 }
 
 // CheckUpdateResponse 检查更新接口的响应。

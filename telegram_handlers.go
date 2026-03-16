@@ -189,6 +189,9 @@ func (tb *TelegramClient) handleCallback(callback *tgbotapi.CallbackQuery) {
 		tb.handleWorkerControl(callback)
 	case strings.HasPrefix(data, "fav:"):
 		tb.handleFavoriteCallback(callback)
+	case strings.HasPrefix(data, "mon:check:"):
+		username := strings.TrimPrefix(data, "mon:check:")
+		tb.handleMonitorCheckCallback(callback, username)
 	}
 }
 
@@ -637,22 +640,91 @@ func (tb *TelegramClient) handleMonitor(message *tgbotapi.Message) {
 	}
 
 	text := fmt.Sprintf("📡 监控状态（每 %d 分钟检查一次）\n\n", config.MonitorIntervalMin)
+	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, username := range config.MonitorAccounts {
 		postsCache, ok := GetPostsFromCacheRaw(username)
 		if !ok || postsCache == nil || len(postsCache.Posts) == 0 {
 			text += fmt.Sprintf("• @%s — 尚未检测\n", username)
+		} else {
+			latestShortcode := postsCache.Posts[0].Shortcode
+			lastCheck := "-"
+			if !postsCache.UpdatedAt.IsZero() {
+				lastCheck = postsCache.UpdatedAt.Format("01-02 15:04")
+			}
+			text += fmt.Sprintf("• @%s\n  最新: %s\n  检测: %s\n", username, latestShortcode, lastCheck)
+		}
+		btn := tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("🔍 立即检测 @%s", username),
+			"mon:check:"+username,
+		)
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+	}
+
+	msg := tgbotapi.NewMessage(message.Chat.ID, text)
+	if len(rows) > 0 {
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	}
+	if _, err := tb.bot.Send(msg); err != nil {
+		log.Printf("发送监控状态失败: %v", err)
+	}
+}
+
+// handleMonitorCheckCallback 处理"立即检测"按钮回调，立即对指定账户执行一次监控检测。
+func (tb *TelegramClient) handleMonitorCheckCallback(callback *tgbotapi.CallbackQuery, username string) {
+	if !tb.isAdminUser(callback.From.ID) {
+		tb.answerCallback(callback.ID, "❌ 仅管理员可操作")
+		return
+	}
+
+	tb.answerCallback(callback.ID, fmt.Sprintf("🔍 开始检测 @%s ...", username))
+
+	chatID := callback.From.ID
+	if callback.Message != nil {
+		chatID = callback.Message.Chat.ID
+	}
+
+	statusMsg := tb.sendMessage(chatID, fmt.Sprintf("🔍 正在检测 @%s ...", username))
+
+	result, err := tb.requestWorkerMonitorCheck(username)
+	if err != nil {
+		tb.editMessage(chatID, statusMsg.MessageID, fmt.Sprintf("❌ 检测失败: %v", err))
+		return
+	}
+
+	if len(result.NewShortcodes) == 0 {
+		tb.editMessage(chatID, statusMsg.MessageID, fmt.Sprintf("✅ @%s 无新帖子", username))
+		return
+	}
+
+	tb.editMessage(chatID, statusMsg.MessageID,
+		fmt.Sprintf("✅ @%s 发现 %d 条新帖，正在上传...", username, len(result.NewShortcodes)))
+
+	for i, sc := range result.NewShortcodes {
+		var files []string
+		if i < len(result.NewFilePaths) {
+			files = result.NewFilePaths[i]
+		}
+		if len(files) == 0 {
 			continue
 		}
 
-		latestShortcode := postsCache.Posts[0].Shortcode
-		lastCheck := "-"
-		if !postsCache.UpdatedAt.IsZero() {
-			lastCheck = postsCache.UpdatedAt.Format("01-02 15:04")
+		postURL := fmt.Sprintf("https://www.instagram.com/p/%s/", sc)
+		tb.sendMessage(chatID, fmt.Sprintf("🆕 新帖 %d/%d\n%s", i+1, len(result.NewShortcodes), postURL))
+
+		for j, filePath := range files {
+			if strings.HasSuffix(filePath, ".mp4") {
+				tb.sendChatAction(chatID, "upload_video")
+			} else {
+				tb.sendChatAction(chatID, "upload_photo")
+			}
+			if err := tb.sendFile(chatID, filePath); err != nil {
+				log.Printf("上传文件失败 %s: %v", filePath, err)
+				tb.sendMessage(chatID, fmt.Sprintf("❌ 上传文件 %d 失败", j+1))
+			}
 		}
-		text += fmt.Sprintf("• @%s\n  最新: %s\n  检测: %s\n", username, latestShortcode, lastCheck)
 	}
 
-	tb.sendMessage(message.Chat.ID, text)
+	tb.sendMessage(chatID, fmt.Sprintf("✅ 完成！共上传 %d 条新帖", len(result.NewShortcodes)))
 }
 
 // sendFavoritesList 发送常用账户列表及操作按钮。
