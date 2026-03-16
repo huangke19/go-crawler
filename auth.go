@@ -93,52 +93,17 @@ func ExtractBrowserCookies(ctx context.Context) ([]*Cookie, error) {
 	return cookies, nil
 }
 
-// Login 执行"自动填写账号密码"的登录流程。
-// 实际使用中通常推荐 `ManualLogin()`：可处理验证码/2FA 等需要人工交互的场景。
-func Login(ctx context.Context, username, password string) error {
-	fmt.Println("正在登录 Instagram...")
-
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(instagramLoginURL),
-
-		// 等待登录表单加载
-		chromedp.WaitVisible(`input[name="username"]`, chromedp.ByQuery),
-
-		// 输入用户名和密码
-		chromedp.SendKeys(`input[name="username"]`, username, chromedp.ByQuery),
-		chromedp.SendKeys(`input[name="password"]`, password, chromedp.ByQuery),
-
-		// 点击登录按钮
-		chromedp.Click(`button[type="submit"]`, chromedp.ByQuery),
-
-		// 等待登录完成（等待主页元素出现或登录按钮消失）
-		chromedp.Sleep(loginActionWait),
-	)
-
-	if err != nil {
-		return fmt.Errorf("登录失败: %v", err)
-	}
-
-	// 获取并保存 cookies
-	cookies, err := ExtractBrowserCookies(ctx)
-	if err != nil {
-		return err
-	}
-
-	if err := SaveSession(cookies); err != nil {
-		return fmt.Errorf("保存 session 失败: %v", err)
-	}
-
-	fmt.Println("登录成功！Session 已保存")
-	return nil
-}
-
 // SetCookies 将 cookies 注入到浏览器上下文中。
 // 注：这里的 cookie 只负责恢复登录态；是否有效仍需要后续通过页面行为或接口响应来验证。
 func SetCookies(ctx context.Context, cookies []*Cookie) error {
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		for _, c := range cookies {
-			expr := cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
+			if c == nil {
+				continue
+			}
+			expiresSec := int64(c.Expires)
+			expiresNsec := int64((c.Expires - float64(expiresSec)) * 1e9)
+			expr := cdp.TimeSinceEpoch(time.Unix(expiresSec, expiresNsec))
 			if err := network.SetCookie(c.Name, c.Value).
 				WithDomain(c.Domain).
 				WithPath(c.Path).
@@ -185,7 +150,9 @@ func EnsureLoggedIn(ctx context.Context) error {
 
 			// 检查是否登录成功（简单检查：看是否有登录按钮）
 			var loginBtnExists bool
-			chromedp.Run(ctx, chromedp.Evaluate(`document.querySelector('a[href="/accounts/login/"]') !== null`, &loginBtnExists))
+			if err := chromedp.Run(ctx, chromedp.Evaluate(`document.querySelector('a[href="/accounts/login/"]') !== null`, &loginBtnExists)); err != nil {
+				return fmt.Errorf("检测登录状态失败: %w", err)
+			}
 
 			if !loginBtnExists {
 				fmt.Println("✓ Session 有效，已登录")

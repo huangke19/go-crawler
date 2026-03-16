@@ -37,9 +37,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 // 全局 HTTP 客户端，复用连接
@@ -61,13 +61,33 @@ type downloadTask struct {
 }
 
 // CreateUserDirectory 创建用户下载目录 `downloads/<username>/`。
-// 目录权限使用 0755，便于本机调试与查看；如运行在更严格环境可按需收紧权限。
+// 对用户名做路径安全校验，防止意外的路径穿越。
 func CreateUserDirectory(username string) (string, error) {
-	dirPath := filepath.Join("downloads", username)
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", fmt.Errorf("用户名不能为空")
+	}
+
+	if !isSafeUsername(username) {
+		return "", fmt.Errorf("用户名包含非法字符")
+	}
+
+	safeName := filepath.Base(username)
+	if safeName == "." || safeName == ".." || safeName == "" {
+		return "", fmt.Errorf("用户名无效")
+	}
+
+	dirPath := filepath.Join("downloads", safeName)
 	if err := os.MkdirAll(dirPath, 0755); err != nil {
 		return "", fmt.Errorf("创建目录失败: %v", err)
 	}
 	return dirPath, nil
+}
+
+var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func isSafeUsername(username string) bool {
+	return usernamePattern.MatchString(username)
 }
 
 // DownloadMedia 下载单个媒体文件，支持重试。
@@ -243,7 +263,13 @@ func downloadMediaByShortcode(shortcode string, mediaInfo *MediaInfo) ([]string,
 // retries 传递到 `DownloadMedia`，用于对瞬时网络问题进行有限次重试。
 func downloadConcurrently(tasks []downloadTask, maxConcurrent int, retries int) error {
 	totalFiles := len(tasks)
-	var completed int32
+	if totalFiles == 0 {
+		return nil
+	}
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
+
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, maxConcurrent)
 	errChan := make(chan error, totalFiles)
@@ -255,37 +281,49 @@ func downloadConcurrently(tasks []downloadTask, maxConcurrent int, retries int) 
 		go func(t downloadTask) {
 			defer wg.Done()
 
-			// 获取信号量
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			// 下载文件
 			if err := DownloadMedia(t.url, t.savePath, retries); err != nil {
 				errChan <- fmt.Errorf("%s: %v", filepath.Base(t.savePath), err)
-				return
 			}
-
-			// 更新进度
-			atomic.AddInt32(&completed, 1)
 		}(task)
 	}
 
-	// 等待所有下载完成
 	wg.Wait()
 	close(errChan)
 
-	// 收集错误
-	var errors []error
+	if len(errChan) == 0 {
+		fmt.Printf("✓ 下载完成，共 %d 个文件\n", totalFiles)
+		return nil
+	}
+
+	errors := make([]error, 0, len(errChan))
 	for err := range errChan {
 		errors = append(errors, err)
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("下载失败 %d 个文件", len(errors))
+	if len(errors) == 0 {
+		return nil
 	}
 
-	fmt.Printf("✓ 下载完成，共 %d 个文件\n", totalFiles)
-	return nil
+	var detail strings.Builder
+	limit := len(errors)
+	if limit > 3 {
+		limit = 3
+	}
+	for i := 0; i < limit; i++ {
+		detail.WriteString(errors[i].Error())
+		if i < limit-1 {
+			detail.WriteString("; ")
+		}
+	}
+
+	if len(errors) > limit {
+		detail.WriteString(fmt.Sprintf("; 其余 %d 个错误已省略", len(errors)-limit))
+	}
+
+	return fmt.Errorf("下载失败 %d 个文件: %s", len(errors), detail.String())
 }
 
 // GetFileExtension 从 URL 获取文件扩展名。

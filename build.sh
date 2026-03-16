@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 echo "=== 编译 Instagram Crawler ==="
 
@@ -10,18 +11,32 @@ go build -o crawler
 echo "编译 gobot..."
 go build -tags gobot -o gobot
 
-echo ""
-echo "更新 Bot 命令菜单..."
-./crawler setup-bot
+if [[ -x ./crawler ]]; then
+	echo ""
+	echo "更新 Bot 命令菜单..."
+	./crawler setup-bot
+fi
+
+# 仅在 gobot 可执行时尝试重启
+if command -v ./gobot >/dev/null 2>&1; then
+	echo ""
+	if ./gobot status >/dev/null 2>&1; then
+		echo "重启 gobot..."
+		./gobot restart
+	else
+		echo "gobot 未运行，跳过重启"
+	fi
+
+	if ./gobot worker status >/dev/null 2>&1; then
+		echo "重启 gobot worker..."
+		./gobot worker restart
+	else
+		echo "gobot worker 未运行，跳过重启"
+	fi
+fi
 
 echo ""
-echo "重启 gobot..."
-gobot restart
-echo "重启 gobot worker..."
-gobot worker restart
-
-echo ""
-echo "✅ 编译完成并已执行 gobot restart 与 gobot worker restart！"
+echo "✅ 编译完成"
 echo ""
 echo "可执行文件:"
 echo "  ./crawler - 主程序（登录、下载）"

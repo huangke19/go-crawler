@@ -146,8 +146,15 @@ func handleDownload() {
 		os.Exit(1)
 	}
 
-	targetUsername := os.Args[2]
+	targetUsername := strings.TrimSpace(os.Args[2])
 	postIndexStr := os.Args[3]
+
+	if targetUsername == "" {
+		fmt.Println("❌ 错误: 用户名不能为空")
+		fmt.Println()
+		downloadCmd.Usage()
+		os.Exit(1)
+	}
 
 	postIndex, err := strconv.Atoi(postIndexStr)
 	if err != nil || postIndex < 1 {

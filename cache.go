@@ -293,6 +293,26 @@ func GetPostsFromCache(username string) (*PostsCache, bool) {
 	return posts, true
 }
 
+// GetPostsCacheSnapshot 返回指定用户的帖子缓存副本以及有效性。
+// 用于需要同时获取“不过期基线”和“是否过期”的场景，避免多次无锁读取导致竞态。
+func GetPostsCacheSnapshot(username string) (cached []PostItem, valid bool, ok bool) {
+	cache, _ := LoadPostsCache()
+	postsCacheMu.RLock()
+	defer postsCacheMu.RUnlock()
+
+	posts, exists := cache[username]
+	if !exists {
+		return nil, false, false
+	}
+
+	if posts != nil {
+		cached = append([]PostItem(nil), posts.Posts...)
+		valid = time.Now().Before(posts.ExpiresAt)
+	}
+
+	return cached, valid, true
+}
+
 // GetPostsFromCacheRaw 从帖子缓存获取用户帖子列表（不检查过期时间）。
 // 该方法用于“更新检测”场景：即使缓存过期，也需要拿到旧基线来判断是否真有新帖。
 func GetPostsFromCacheRaw(username string) (*PostsCache, bool) {

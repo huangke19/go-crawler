@@ -1,93 +1,25 @@
 // ============================================================================
-// worker.go - Worker HTTP 服务（执行面）
+// worker_handlers.go - Worker HTTP 请求处理器
 // ============================================================================
 //
 // 职责：
-//   - 启动 HTTP 服务，接收 Bot 的下载请求
-//   - 复用浏览器实例，避免每个请求都启动 Chrome
-//   - 优先使用三层缓存（文件 / 媒体 / 帖子）
-//   - 执行实时抓取与下载
-//   - 优雅关闭：等待活跃请求完成
-//
-// 核心概念：
-//   - Worker 是"执行面"：负责耗时的抓取与下载
-//   - Bot 是"控制面"：负责交互与文件上传
-//   - 分离设计：避免 Bot 因长耗时操作而无法响应用户
-//
-// HTTP 接口：
-//   - GET /health：健康检查
-//   - POST /download：执行下载任务
-//   - POST /check-update：检查主页是否有更新并刷新帖子列表缓存
-//
-// 下载请求格式：
-//   {
-//     "mode": "index" 或 "shortcode",
-//     "username": "用户名（mode=index 时必需）",
-//     "post_index": 帖子序号（mode=index 时必需）,
-//     "shortcode": "shortcode（mode=shortcode 时必需）"
-//   }
-//
-// 下载响应格式：
-//   {
-//     "success": true/false,
-//     "message": "错误信息或成功提示",
-//     "file_paths": ["文件路径1", "文件路径2", ...]
-//   }
-//
-// 缓存命中顺序：
-//   1. 文件缓存：如果文件仍存在，直接返回路径（<1秒）
-//   2. 媒体缓存：如果 shortcode 的媒体 URL 已缓存，跳过 GraphQL 调用
-//   3. 帖子缓存：如果用户主页帖子列表未过期，跳过滚动加载
-//   4. 实时抓取：以上都未命中，则实时访问主页、调用 GraphQL、下载文件
-//
-// 关键函数：
-//   - NewWorkerServer()：创建 Worker 服务
-//   - RunWorker()：启动 Worker 服务
-//   - handleHealth()：健康检查
-//   - handleDownload()：处理下载请求
-//   - handleCheckUpdate()：检查主页更新
-//   - getWorkerListenAddr()：获取监听地址
+//   - HTTP 请求处理（/health, /download, /check-update, /monitor-check）
+//   - 下载任务执行（按序号/按shortcode）
+//   - 缓存更新检查
+//   - 监控检测
 //
 // ============================================================================
 
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
-	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 )
-
-const (
-	defaultWorkerListenAddr = "127.0.0.1:18080"
-)
-
-// WorkerServer 是下载执行面 HTTP 服务。
-//
-// 设计要点：
-// - Worker 负责"耗时且可能阻塞"的抓取与下载逻辑；Bot 只做交互与文件上传。
-// - Worker 复用一个无头浏览器实例（避免每个请求都启动 Chrome）；
-// - 通过 activeReqs 跟踪活跃请求，实现优雅关闭（尽量不半途打断下载）。
-// - stopCh 用于通知监控 goroutine 退出。
-type WorkerServer struct {
-	server        *http.Server
-	config        *Config
-	browserCtx    context.Context
-	browserCancel context.CancelFunc
-	browserMu     sync.Mutex
-	activeReqs    sync.WaitGroup // 跟踪活跃请求
-	stopCh        chan struct{}  // 关闭信号，通知监控 goroutine 退出
-}
 
 // WorkerDownloadRequest 是 Bot/CLI 调用 Worker 的下载请求体。
 // - mode=index：按用户主页时间线序号下载（需要 username + post_index）
@@ -107,154 +39,26 @@ type WorkerDownloadResponse struct {
 	FilePaths []string `json:"file_paths,omitempty"`
 }
 
-// getWorkerListenAddr 获取 worker 监听地址。
-// 优先级：环境变量 `CRAWLER_WORKER_ADDR` > config.json 的 worker_addr > 默认值。
-func getWorkerListenAddr() string {
-	if value := strings.TrimSpace(os.Getenv("CRAWLER_WORKER_ADDR")); value != "" {
-		return value
-	}
-
-	if cfg, err := LoadConfig("config.json"); err == nil {
-		return cfg.GetWorkerAddr()
-	}
-
-	return defaultWorkerListenAddr
+// CheckUpdateResponse 检查更新接口的响应。
+type CheckUpdateResponse struct {
+	Success       bool       `json:"success"`
+	Message       string     `json:"message,omitempty"`
+	NeedRefresh   bool       `json:"need_refresh"`
+	TotalPosts    int        `json:"total_posts"`
+	NewShortcodes []string   `json:"new_shortcodes,omitempty"`
+	NewFilePaths  [][]string `json:"new_file_paths,omitempty"`
 }
 
-// NewWorkerServer 构建 worker HTTP 服务并注册路由：
-// - /health：健康检查
-// - /download：执行下载任务
-// - /check-update：检查主页是否有更新并刷新帖子列表缓存
-func NewWorkerServer() *WorkerServer {
-	mux := http.NewServeMux()
-	ws := &WorkerServer{
-		stopCh: make(chan struct{}),
-	}
-
-	// 尝试加载配置（用于 Cookie 失效通知）
-	if cfg, err := LoadConfig("config.json"); err == nil {
-		ws.config = cfg
-	}
-
-	mux.HandleFunc("/health", ws.handleHealth)
-	mux.HandleFunc("/download", ws.handleDownload)
-	mux.HandleFunc("/check-update", ws.handleCheckUpdate)
-	mux.HandleFunc("/monitor-check", ws.handleMonitorCheck)
-
-	ws.server = &http.Server{
-		Addr:              getWorkerListenAddr(),
-		Handler:           mux,
-		ReadHeaderTimeout: workerReadHeaderTimeout,
-		ReadTimeout:       workerReadTimeout,
-		WriteTimeout:      workerWriteTimeout,
-	}
-
-	return ws
+// MonitorCheckResponse 单账户立即检测接口的响应。
+type MonitorCheckResponse struct {
+	Success       bool       `json:"success"`
+	Message       string     `json:"message,omitempty"`
+	NewShortcodes []string   `json:"new_shortcodes,omitempty"`
+	NewFilePaths  [][]string `json:"new_file_paths,omitempty"`
 }
 
-// Start 启动 HTTP 服务（阻塞）。
-// 服务启动后同时启动监控 goroutine。
-func (ws *WorkerServer) Start() error {
-	log.Printf("Worker 服务启动: http://%s", ws.server.Addr)
-	ws.startMonitorLoop()
-	if err := ws.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
-	}
-	return nil
-}
-
-// Shutdown 优雅关闭 worker：
-// - 最多等待 30 秒让活跃请求完成\n+// - 关闭复用的浏览器上下文\n+// - 关闭 HTTP server
-func (ws *WorkerServer) Shutdown(ctx context.Context) error {
-	log.Println("开始优雅关闭 Worker...")
-
-	// 停止监控 goroutine
-	select {
-	case <-ws.stopCh:
-		// 已经关闭，忽略
-	default:
-		close(ws.stopCh)
-	}
-
-	// 等待所有活跃请求完成（最多等待 30 秒）
-	done := make(chan struct{})
-	go func() {
-		ws.activeReqs.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		log.Println("所有请求已完成")
-	case <-time.After(workerShutdownTimeout):
-		log.Println("⚠️  等待请求超时，强制关闭")
-	}
-
-	// 关闭浏览器实例
-	ws.browserMu.Lock()
-	if ws.browserCancel != nil {
-		ws.browserCancel()
-		log.Println("关闭浏览器实例")
-	}
-	ws.browserMu.Unlock()
-
-	return ws.server.Shutdown(ctx)
-}
-
-// getBrowser 获取或创建浏览器实例（Worker 级别复用）。
-//
-// 该浏览器实例用于：
-// - 访问用户主页获取帖子 shortcode 列表（按序号下载/刷新缓存）\n+// - 在媒体缓存未命中时，调用 GraphQL 获取媒体 URL
-func (ws *WorkerServer) getBrowser() (context.Context, error) {
-	ws.browserMu.Lock()
-	defer ws.browserMu.Unlock()
-
-	// 如果浏览器存在且健康，直接返回
-	if ws.browserCtx != nil && ws.browserCtx.Err() == nil {
-		return ws.browserCtx, nil
-	}
-
-	// 如果旧的上下文存在但出错，先清理
-	if ws.browserCancel != nil {
-		ws.browserCancel()
-		log.Println("清理旧的浏览器实例")
-	}
-
-	ctx, cancel := CreateFastBrowserContext()
-	ws.browserCtx = ctx
-	ws.browserCancel = cancel
-	log.Println("创建新的浏览器实例")
-
-	return ws.browserCtx, nil
-}
-
-// notifyCookieExpired 发送 Cookie 失效通知到 Telegram。
-// 目的：当 worker 在 GraphQL 请求中检测到 401/403 时，主动提醒管理员重新执行 `crawler login`。
-func (ws *WorkerServer) notifyCookieExpired() {
-	if ws.config == nil || ws.config.TelegramBotToken == "" {
-		return
-	}
-
-	message := "⚠️ Instagram Cookie 已失效，请运行 ./crawler login 重新登录"
-
-	for _, chatID := range ws.config.AdminUserIDs {
-		url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", ws.config.TelegramBotToken)
-		payload := map[string]interface{}{
-			"chat_id": chatID,
-			"text":    message,
-		}
-		body, err := json.Marshal(payload)
-		if err != nil {
-			continue
-		}
-		resp, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
-		if err == nil {
-			resp.Body.Close()
-		}
-	}
-}
-
-// handleHealth 提供健康检查接口。\n+// Bot 会用它判断 worker 是否在线（避免用户点击后才发现服务未启动）。
+// handleHealth 提供健康检查接口。
+// Bot 会用它判断 worker 是否在线（避免用户点击后才发现服务未启动）。
 func (ws *WorkerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
@@ -342,7 +146,10 @@ func (ws *WorkerServer) runDownloadTask(req WorkerDownloadRequest) ([]string, er
 // downloadByShortcode 通过 Shortcode 下载（强依赖缓存路径语义）。
 //
 // 命中顺序：
-// 1) 文件缓存（files_cache）：若文件仍存在，直接返回路径\n+// 2) 媒体缓存（media_cache）：若媒体 URL 已缓存，跳过 GraphQL\n+// 3) GraphQL 获取媒体 URL，并回填媒体缓存\n+// 4) 下载到 `downloads/cache/<shortcode>/...`，并写入文件缓存
+// 1) 文件缓存（files_cache）：若文件仍存在，直接返回路径
+// 2) 媒体缓存（media_cache）：若媒体 URL 已缓存，跳过 GraphQL
+// 3) GraphQL 获取媒体 URL，并回填媒体缓存
+// 4) 下载到 `downloads/cache/<shortcode>/...`，并写入文件缓存
 func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) {
 	log.Printf("  检查文件缓存...")
 	// 1. 检查文件缓存
@@ -404,7 +211,9 @@ func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) 
 // downloadByIndex 通过"主页时间线序号"下载。
 //
 // 关键点：
-// - 先尝试从 posts_cache 命中 shortcode（避免打开主页）\n+// - 若缓存不存在/过期/数量不足，则访问主页加载至少 postIndex 条并刷新缓存\n+// - 拿到 shortcode 后复用 downloadByShortcode（自动套用媒体/文件缓存）
+// - 先尝试从 posts_cache 命中 shortcode（避免打开主页）
+// - 若缓存不存在/过期/数量不足，则访问主页加载至少 postIndex 条并刷新缓存
+// - 拿到 shortcode 后复用 downloadByShortcode（自动套用媒体/文件缓存）
 func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]string, error) {
 	log.Printf("  检查帖子列表缓存...")
 	var shortcode string
@@ -503,70 +312,6 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 	return files, nil
 }
 
-// RunWorker 启动 worker 并监听退出信号（SIGINT/SIGTERM），支持优雅关闭。
-func RunWorker() error {
-	server := NewWorkerServer()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.Start()
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-
-	select {
-	case err := <-errCh:
-		return fmt.Errorf("worker 服务异常退出: %w", err)
-	case sig := <-sigCh:
-		log.Printf("收到退出信号: %s", sig.String())
-		ctx, cancel := context.WithTimeout(context.Background(), workerReadHeaderTimeout)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
-			return fmt.Errorf("worker 优雅退出失败: %w", err)
-		}
-		log.Println("worker 已优雅退出")
-		return nil
-	}
-}
-
-// writeJSON 写入 JSON 响应。这里忽略编码错误以避免影响主流程（一般不会发生）。
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-// buildWorkerBaseURL 由监听地址构建可访问的 base URL（默认 http://）。
-func buildWorkerBaseURL() string {
-	addr := getWorkerListenAddr()
-	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
-		return addr
-	}
-	return "http://" + addr
-}
-
-// workerControlSummary 返回 worker 控制面摘要文本（用于 status 输出）。
-func workerControlSummary() string {
-	return fmt.Sprintf("worker 地址: %s", buildWorkerBaseURL())
-}
-
-// parseWorkerPort 从监听地址中提取端口部分（用于守护/控制逻辑）。
-func parseWorkerPort() string {
-	parts := strings.Split(getWorkerListenAddr(), ":")
-	if len(parts) == 0 {
-		return ""
-	}
-	return parts[len(parts)-1]
-}
-
-// workerPortInt 返回端口的 int 形式（转换失败返回 0）。
-func workerPortInt() int {
-	port, _ := strconv.Atoi(parseWorkerPort())
-	return port
-}
-
 // handleCheckUpdate 处理检查更新请求。
 // 用于 bot 侧"检查更新"按钮：检测新帖 → 自动下载 → 返回文件路径。
 func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
@@ -620,12 +365,76 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, result)
 }
 
-// MonitorCheckResponse 单账户立即检测接口的响应。
-type MonitorCheckResponse struct {
-	Success       bool       `json:"success"`
-	Message       string     `json:"message,omitempty"`
-	NewShortcodes []string   `json:"new_shortcodes,omitempty"`
-	NewFilePaths  [][]string `json:"new_file_paths,omitempty"`
+// checkCacheUpdate 检查缓存是否需要更新，发现新帖时自动下载。
+// 采用与监控相同的 pre/post diff 模式：
+// 1. 读取旧缓存基线
+// 2. 刷新帖子列表
+// 3. 对比差集找出新 shortcode
+// 4. 逐条下载新帖
+func (ws *WorkerServer) checkCacheUpdate(username string) (*CheckUpdateResponse, error) {
+	log.Printf("  检查 @%s 的缓存状态...", username)
+
+	ctx, err := ws.getBrowser()
+	if err != nil {
+		return nil, fmt.Errorf("获取浏览器失败: %w", err)
+	}
+
+	if err := EnsureLoggedIn(ctx); err != nil {
+		return nil, fmt.Errorf("登录验证失败: %w", err)
+	}
+
+	// 1. 读取旧缓存基线
+	var cachedPosts []PostItem
+	if postsCache, ok := GetPostsFromCacheRaw(username); ok && postsCache != nil {
+		cachedPosts = postsCache.Posts
+	}
+
+	// 2. 刷新帖子列表
+	_, totalPosts, err := RefreshPostsCache(ctx, username, 12)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 读取刷新后的缓存并对比
+	var latestPosts []PostItem
+	if latestCache, ok := GetPostsFromCacheRaw(username); ok && latestCache != nil {
+		latestPosts = latestCache.Posts
+	}
+
+	newShortcodes := DiffNewShortcodes(cachedPosts, latestPosts)
+
+	if len(newShortcodes) == 0 {
+		log.Printf("  ✓ 缓存已是最新（共 %d 条）", totalPosts)
+		return &CheckUpdateResponse{
+			Success:    true,
+			TotalPosts: totalPosts,
+		}, nil
+	}
+
+	log.Printf("  ✓ 检测到 %d 条新帖，开始下载", len(newShortcodes))
+
+	// 4. 逐条下载新帖（从旧到新）
+	var allFilePaths [][]string
+	var downloadedShortcodes []string
+	for i := len(newShortcodes) - 1; i >= 0; i-- {
+		sc := newShortcodes[i]
+		files, dlErr := ws.downloadByShortcode(sc)
+		if dlErr != nil {
+			log.Printf("  下载失败（%s）: %v", sc, dlErr)
+			continue
+		}
+		downloadedShortcodes = append(downloadedShortcodes, sc)
+		allFilePaths = append(allFilePaths, files)
+		log.Printf("  ✓ 下载完成 %s（%d 个文件）", sc, len(files))
+	}
+
+	return &CheckUpdateResponse{
+		Success:       true,
+		NeedRefresh:   true,
+		TotalPosts:    totalPosts,
+		NewShortcodes: downloadedShortcodes,
+		NewFilePaths:  allFilePaths,
+	}, nil
 }
 
 // handleMonitorCheck 立即对指定账户执行一次监控检测。
@@ -743,84 +552,9 @@ func (ws *WorkerServer) handleMonitorCheck(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// CheckUpdateResponse 检查更新接口的响应。
-type CheckUpdateResponse struct {
-	Success       bool       `json:"success"`
-	Message       string     `json:"message,omitempty"`
-	NeedRefresh   bool       `json:"need_refresh"`
-	TotalPosts    int        `json:"total_posts"`
-	NewShortcodes []string   `json:"new_shortcodes,omitempty"`
-	NewFilePaths  [][]string `json:"new_file_paths,omitempty"`
-}
-
-// checkCacheUpdate 检查缓存是否需要更新，发现新帖时自动下载。
-// 采用与监控相同的 pre/post diff 模式：
-// 1. 读取旧缓存基线
-// 2. 刷新帖子列表
-// 3. 对比差集找出新 shortcode
-// 4. 逐条下载新帖
-func (ws *WorkerServer) checkCacheUpdate(username string) (*CheckUpdateResponse, error) {
-	log.Printf("  检查 @%s 的缓存状态...", username)
-
-	ctx, err := ws.getBrowser()
-	if err != nil {
-		return nil, fmt.Errorf("获取浏览器失败: %w", err)
-	}
-
-	if err := EnsureLoggedIn(ctx); err != nil {
-		return nil, fmt.Errorf("登录验证失败: %w", err)
-	}
-
-	// 1. 读取旧缓存基线
-	var cachedPosts []PostItem
-	if postsCache, ok := GetPostsFromCacheRaw(username); ok && postsCache != nil {
-		cachedPosts = postsCache.Posts
-	}
-
-	// 2. 刷新帖子列表
-	_, totalPosts, err := RefreshPostsCache(ctx, username, 12)
-	if err != nil {
-		return nil, err
-	}
-
-	// 3. 读取刷新后的缓存并对比
-	var latestPosts []PostItem
-	if latestCache, ok := GetPostsFromCacheRaw(username); ok && latestCache != nil {
-		latestPosts = latestCache.Posts
-	}
-
-	newShortcodes := DiffNewShortcodes(cachedPosts, latestPosts)
-
-	if len(newShortcodes) == 0 {
-		log.Printf("  ✓ 缓存已是最新（共 %d 条）", totalPosts)
-		return &CheckUpdateResponse{
-			Success:    true,
-			TotalPosts: totalPosts,
-		}, nil
-	}
-
-	log.Printf("  ✓ 检测到 %d 条新帖，开始下载", len(newShortcodes))
-
-	// 4. 逐条下载新帖（从旧到新）
-	var allFilePaths [][]string
-	var downloadedShortcodes []string
-	for i := len(newShortcodes) - 1; i >= 0; i-- {
-		sc := newShortcodes[i]
-		files, dlErr := ws.downloadByShortcode(sc)
-		if dlErr != nil {
-			log.Printf("  下载失败（%s）: %v", sc, dlErr)
-			continue
-		}
-		downloadedShortcodes = append(downloadedShortcodes, sc)
-		allFilePaths = append(allFilePaths, files)
-		log.Printf("  ✓ 下载完成 %s（%d 个文件）", sc, len(files))
-	}
-
-	return &CheckUpdateResponse{
-		Success:       true,
-		NeedRefresh:   true,
-		TotalPosts:    totalPosts,
-		NewShortcodes: downloadedShortcodes,
-		NewFilePaths:  allFilePaths,
-	}, nil
+// writeJSON 写入 JSON 响应。这里忽略编码错误以避免影响主流程（一般不会发生）。
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }

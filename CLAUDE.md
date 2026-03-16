@@ -43,12 +43,21 @@
 | **main.go** | CLI 参数解析与子命令分发 | `main()`, `handleLogin()`, `handleDownload()`, `handleCheckUpdate()`, `handleBot()`, `handleWorker()` | ~290 |
 | **auth.go** | 认证管理与会话持久化 | `LoadSession()`, `SaveSession()`, `SetCookies()`, `EnsureLoggedIn()`, `CreateBrowserContext()`, `CreateFastBrowserContext()` | ~230 |
 | **login.go** | 手动登录流程 | `ManualLogin()` | ~70 |
-| **scraper.go** | 页面爬取与媒体 URL 提取 | `NavigateToUser()`, `ScrollToLoadMore()`, `GetPostByIndex()`, `ExtractMediaURLs()`, `extractMediaFromJSON()` | ~480 |
+| **scraper_navigator.go** | 页面导航与帖子定位 | `NavigateToUser()`, `ScrollToLoadMore()`, `GetPostByIndex()`, `GetAllPostLinks()` | ~230 |
+| **scraper_extractor.go** | 媒体 URL 提取 | `ExtractMediaURLs()`, `extractMediaFromJSON()`, `extractImageURL()` | ~250 |
+| **scraper_cache.go** | 帖子缓存刷新 | `RefreshPostsCache()`, `hasNewPostComparedToCache()`, `samePostsOrder()` | ~80 |
 | **downloader.go** | 文件下载与并发控制 | `CreateUserDirectory()`, `DownloadMedia()`, `DownloadPost()`, `downloadConcurrently()` | ~270 |
 | **cache.go** | 三层缓存系统 | `LoadMediaCache()`, `LoadPostsCache()`, `LoadFilesCache()`, `GetDownloadHistory()` | ~370 |
 | **config.go** | 配置管理 | `LoadConfig()`, `SaveConfig()`, `GetWorkerAddr()`, `GetWorkerBaseURL()` | ~85 |
-| **bot.go** | Telegram Bot 实现 | `NewTelegramBot()`, `Start()`, `handleCommand()`, `handleCallback()`, `handleFavoritesCommand()`, `sendFavoritesList()`, `addFavoriteAccount()`, `removeFavoriteAccount()` | ~600+ |
-| **worker.go** | Worker HTTP 服务 | `NewWorkerServer()`, `RunWorker()`, `handleDownload()`, `handleCheckUpdate()`, `startMonitorLoop()` | ~400+ |
+| **telegram_bot.go** | Telegram Bot 核心 | `NewTelegramBot()`, `Start()`, `sendMessage()`, `sendFile()` | ~250 |
+| **telegram_handler_basic.go** | Bot 基础命令 | `handleCommand()`, `handleCallback()`, `handleStart()`, `handleHelp()` | ~120 |
+| **telegram_handler_download.go** | Bot 下载功能 | `handleDownload()`, `showIndexSelection()`, `showShortcodeSelection()`, `handleMessage()` | ~390 |
+| **telegram_handler_status.go** | Bot 状态与控制 | `handleStatus()`, `handleWorkerControl()`, `workerStatusSummary()` | ~110 |
+| **telegram_handler_favorites.go** | Bot 常用账户管理 | `handleFavoritesCommand()`, `addFavoriteAccount()`, `removeFavoriteAccount()` | ~140 |
+| **telegram_handler_monitor.go** | Bot 监控功能 | `handleMonitor()`, `handleMonitorCheckCallback()`, `executeMonitorCheck()` | ~140 |
+| **telegram_worker.go** | Bot-Worker 交互 | `executeDownload()`, `requestWorkerCheckUpdate()`, `checkWorkerHealth()` | ~300 |
+| **worker_server.go** | Worker 服务器管理 | `NewWorkerServer()`, `Start()`, `Shutdown()`, `getBrowser()`, `RunWorker()` | ~220 |
+| **worker_handlers.go** | Worker 请求处理 | `handleDownload()`, `handleCheckUpdate()`, `downloadByShortcode()`, `downloadByIndex()` | ~510 |
 | **daemon.go** | 守护进程管理 | `StartServiceDaemon()`, `StopServiceDaemon()`, `RestartServiceDaemon()`, `GetServiceRuntime()` | ~377 |
 | **gobot.go** | 守护进程 CLI 工具 | `main()`, `printGobotUsage()`, `showLogs()` | ~118 |
 | **monitor.go** | Instagram 账户监控 | `startMonitorLoop()`, `checkAllAccounts()`, `checkAccount()`, `notifyNewPost()`, `sendTelegramFile()` | ~230 |
@@ -57,31 +66,40 @@
 
 ```
 go-crawler/
-├── main.go              # 主入口，CLI 参数解析和流程编排
-├── auth.go              # 认证管理：会话保存/加载、Cookie 设置、登录状态验证
-├── login.go             # 手动登录流程：打开浏览器让用户登录
-├── scraper.go           # 爬取逻辑：访问用户主页、定位帖子、提取媒体 URL
-├── downloader.go        # 下载逻辑：并发下载、重试机制、文件管理
-├── bot.go               # Telegram Bot 实现：消息处理、下载任务管理
-├── worker.go            # Worker 进程：HTTP 服务器、下载任务执行
-├── cache.go             # 三级缓存系统：媒体/帖子/文件缓存
-├── config.go            # 配置管理：加载 config.json
-├── setup_bot.go         # Bot 命令菜单设置
-├── daemon.go            # 守护进程管理：启动/停止/重启逻辑
-├── gobot.go             # 守护进程 CLI 工具入口
-├── monitor.go           # Instagram 账户监控：轮询、检测新帖、自动下载推送
-├── build.sh             # 编译脚本
-├── go.mod               # 模块定义
-├── .instagram_session.json  # 会话文件（Cookie 存储，不提交到 Git）
-├── .gobot.pid           # 守护进程 PID 文件（不提交到 Git）
-├── gobot.log            # 守护进程日志文件（不提交到 Git）
-├── cache/               # 缓存目录
-│   ├── media_cache.json     # 媒体 URL 缓存（永久）
-│   ├── posts_cache.json     # 帖子列表缓存（1小时）
-│   └── files_cache.json     # 文件路径缓存（永久）
-├── downloads/           # 下载目录（按用户名组织）
-├── crawler              # 编译后的可执行文件（主程序）
-└── gobot                # 编译后的可执行文件（守护进程管理工具）
+├── main.go                        # 主入口，CLI 参数解析和流程编排
+├── auth.go                        # 认证管理：会话保存/加载、Cookie 设置、登录状态验证
+├── login.go                       # 手动登录流程：打开浏览器让用户登录
+├── scraper_navigator.go           # 页面导航：访问用户主页、滚动加载、定位帖子
+├── scraper_extractor.go           # 媒体提取：GraphQL API 调用、媒体 URL 解析
+├── scraper_cache.go               # 缓存刷新：帖子列表更新、新帖检测
+├── downloader.go                  # 下载逻辑：并发下载、重试机制、文件管理
+├── telegram_bot.go                # Telegram Bot 核心：生命周期、消息发送、文件上传
+├── telegram_handler_basic.go      # Bot 基础命令：/start, /help, 命令分发
+├── telegram_handler_download.go   # Bot 下载功能：账户选择、模式选择、序号选择
+├── telegram_handler_status.go     # Bot 状态控制：/status, worker 控制面板
+├── telegram_handler_favorites.go  # Bot 常用账户：添加/删除/持久化
+├── telegram_handler_monitor.go    # Bot 监控功能：/monitor, 立即检测
+├── telegram_worker.go             # Bot-Worker 交互：HTTP 请求、健康检查
+├── worker_server.go               # Worker 服务器：生命周期、浏览器管理、路由注册
+├── worker_handlers.go             # Worker 请求处理：下载、检查更新、监控检测
+├── cache.go                       # 三级缓存系统：媒体/帖子/文件缓存
+├── config.go                      # 配置管理：加载 config.json
+├── setup_telegram_bot.go          # Bot 命令菜单设置
+├── daemon.go                      # 守护进程管理：启动/停止/重启逻辑
+├── gobot.go                       # 守护进程 CLI 工具入口
+├── monitor.go                     # Instagram 账户监控：轮询、检测新帖、自动下载推送
+├── build.sh                       # 编译脚本
+├── go.mod                         # 模块定义
+├── .instagram_session.json        # 会话文件（Cookie 存储，不提交到 Git）
+├── .gobot.pid                     # 守护进程 PID 文件（不提交到 Git）
+├── gobot.log                      # 守护进程日志文件（不提交到 Git）
+├── cache/                         # 缓存目录
+│   ├── media_cache.json           # 媒体 URL 缓存（永久）
+│   ├── posts_cache.json           # 帖子列表缓存（1小时）
+│   └── files_cache.json           # 文件路径缓存（永久）
+├── downloads/                     # 下载目录（按用户名组织）
+├── crawler                        # 编译后的可执行文件（主程序）
+└── gobot                          # 编译后的可执行文件（守护进程管理工具）
 ```
 
 ## 核心文件详解

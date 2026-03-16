@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/draw"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -214,25 +215,33 @@ func drawTextLarge(img *image.RGBA, x, y int, text string, col color.Color) {
 
 // extractVideoFrame 从视频文件提取第一帧
 func extractVideoFrame(videoPath string) (image.Image, error) {
-	// 创建临时文件保存提取的帧
-	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("frame_%d.jpg", os.Getpid()))
-	defer os.Remove(tmpFile)
-
-	// 使用 ffmpeg 提取第一帧
-	// -i: 输入文件
-	// -vframes 1: 只提取 1 帧
-	// -ss 0: 从第 0 秒开始
-	// -q:v 2: 高质量 JPEG (1-31, 越小越好)
-	cmd := fmt.Sprintf("ffmpeg -i %s -vframes 1 -ss 0 -q:v 2 %s -y 2>/dev/null",
-		shellQuote(videoPath), shellQuote(tmpFile))
-
-	// 执行命令
-	if err := execCommand(cmd); err != nil {
-		return nil, fmt.Errorf("ffmpeg failed: %w", err)
+	if err := ensureFFmpegAvailable(); err != nil {
+		return nil, err
 	}
 
-	// 打开提取的帧
-	img, err := imaging.Open(tmpFile)
+	// 创建临时文件保存提取的帧（自动清理，避免残留）
+	tmpFile, err := os.CreateTemp("", "frame_*.jpg")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpFilePath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpFilePath)
+
+	// 使用 ffmpeg 提取第一帧
+	cmd := exec.Command("ffmpeg",
+		"-i", videoPath,
+		"-vframes", "1",
+		"-ss", "0",
+		"-q:v", "2",
+		tmpFilePath,
+		"-y",
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("ffmpeg failed: %w (output: %s)", err, string(output))
+	}
+
+	img, err := imaging.Open(tmpFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open extracted frame: %w", err)
 	}
@@ -240,32 +249,16 @@ func extractVideoFrame(videoPath string) (image.Image, error) {
 	return img, nil
 }
 
-// shellQuote 对文件路径进行 shell 转义
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
+var (
+	ffmpegCheckOnce sync.Once
+	ffmpegCheckErr  error
+)
 
-// execCommand 执行 shell 命令
-func execCommand(cmd string) error {
-	// 使用 sh -c 执行命令
-	process, err := os.StartProcess("/bin/sh",
-		[]string{"/bin/sh", "-c", cmd},
-		&os.ProcAttr{
-			Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
-		})
-	if err != nil {
-		return err
-	}
-
-	// 等待命令完成
-	state, err := process.Wait()
-	if err != nil {
-		return err
-	}
-
-	if !state.Success() {
-		return fmt.Errorf("command failed with exit code %d", state.ExitCode())
-	}
-
-	return nil
+func ensureFFmpegAvailable() error {
+	ffmpegCheckOnce.Do(func() {
+		if _, err := exec.LookPath("ffmpeg"); err != nil {
+			ffmpegCheckErr = fmt.Errorf("ffmpeg 未安装或不可用: %w", err)
+		}
+	})
+	return ffmpegCheckErr
 }

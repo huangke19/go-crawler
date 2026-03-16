@@ -42,17 +42,23 @@ const (
 
 // 缓存过期时间
 const (
-	postsCacheExpiry = 24 * time.Hour
-	historyCacheTTL  = 1 * time.Minute
+	defaultPostsCacheExpiry = 24 * time.Hour
+	historyCacheTTL         = 1 * time.Minute
 )
 
 // 限制
 const (
-	maxConcurrentDownloads = 10
-	maxJSONResponseSize    = 10 << 20 // 10MB
+	defaultMaxConcurrentDownloads = 10
+	maxJSONResponseSize          = 10 << 20 // 10MB
 )
 
 // 监控
 const (
 	defaultMonitorIntervalMin = 30
+)
+
+// 运行时可配置参数（由 config.json 覆盖）
+var (
+	postsCacheExpiry       = defaultPostsCacheExpiry
+	maxConcurrentDownloads = defaultMaxConcurrentDownloads
 )

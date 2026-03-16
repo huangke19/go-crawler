@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -34,6 +35,8 @@ type Config struct {
 	MonitorAccounts    []string `json:"monitor_accounts"`      // 监控的账户列表
 	MonitorIntervalMin int      `json:"monitor_interval_min"`  // 轮询间隔（分钟），默认 30
 	MonitorCompareTopN int      `json:"monitor_compare_top_n"` // 监控对比前N条，默认20
+	MaxConcurrentDownloads int  `json:"max_concurrent_downloads"`
+	PostsCacheExpiryHours  int  `json:"posts_cache_expiry_hours"`
 }
 
 // LoadConfig 从指定路径读取 `config.json` 并做必要的兼容与默认值填充：
@@ -66,6 +69,14 @@ func LoadConfig(path string) (*Config, error) {
 
 	if config.MonitorCompareTopN <= 0 {
 		config.MonitorCompareTopN = defaultMonitorCompareTopN
+	}
+
+	if config.MaxConcurrentDownloads > 0 {
+		maxConcurrentDownloads = config.MaxConcurrentDownloads
+	}
+
+	if config.PostsCacheExpiryHours > 0 {
+		postsCacheExpiry = time.Duration(config.PostsCacheExpiryHours) * time.Hour
 	}
 
 	return &config, nil
