@@ -78,6 +78,11 @@ func applyEnvOverrides(config *Config) {
 			config.MonitorIntervalMin = val
 		}
 	}
+	if interval := os.Getenv("MONITOR_INTERVAL_HOURS"); interval != "" {
+		if val, err := strconv.Atoi(interval); err == nil && val > 0 {
+			config.MonitorIntervalHours = val
+		}
+	}
 
 	// 最大并发下载数
 	if concurrent := os.Getenv("MAX_CONCURRENT_DOWNLOADS"); concurrent != "" {
@@ -138,6 +143,9 @@ export ADMIN_USER_IDS="123456789"
 
 # 监控间隔（分钟，可选，默认 30）
 export MONITOR_INTERVAL_MIN="30"
+
+# 监控间隔（小时，可选，当未配置分钟时生效）
+export MONITOR_INTERVAL_HOURS="1"
 
 # 最大并发下载数（可选，默认 10）
 export MAX_CONCURRENT_DOWNLOADS="10"

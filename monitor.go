@@ -9,7 +9,7 @@
 //   - 对停机期间遗漏的多条新帖执行补抓并推送
 //
 // 并发安全：
-//   - 监控 goroutine 与 HTTP 下载请求共享 ws.browserMu，天然串行
+//   - 每次检测/下载按需创建独立浏览器上下文，任务结束即释放
 //   - stopCh 通道控制优雅退出
 //
 // ============================================================================
@@ -60,10 +60,7 @@ func (ws *WorkerServer) loadMonitorConfigSnapshot() ([]string, time.Duration, in
 	}
 
 	accounts := normalizeMonitorAccounts(cfg.MonitorAccounts)
-	interval := time.Duration(cfg.MonitorIntervalMin) * time.Minute
-	if interval <= 0 {
-		interval = time.Duration(defaultMonitorIntervalMin) * time.Minute
-	}
+	interval := cfg.GetMonitorInterval()
 	topN := cfg.MonitorCompareTopN
 	if topN <= 0 {
 		topN = defaultMonitorCompareTopN
@@ -74,8 +71,8 @@ func (ws *WorkerServer) loadMonitorConfigSnapshot() ([]string, time.Duration, in
 
 // getFallbackMonitorInterval 返回配置读取失败时的兜底轮询间隔。
 func (ws *WorkerServer) getFallbackMonitorInterval() time.Duration {
-	if ws.config != nil && ws.config.MonitorIntervalMin > 0 {
-		return time.Duration(ws.config.MonitorIntervalMin) * time.Minute
+	if ws.config != nil {
+		return ws.config.GetMonitorInterval()
 	}
 	return time.Duration(defaultMonitorIntervalMin) * time.Minute
 }
@@ -92,7 +89,7 @@ func (ws *WorkerServer) runMonitorCycle() (time.Duration, error) {
 }
 
 // startMonitorLoop 启动监控后台 goroutine。
-// 每轮检测前热加载 monitor_accounts 与 monitor_interval_min。
+// 每轮检测前热加载 monitor_accounts 与监控间隔配置。
 // 通过 ws.stopCh 接收关闭信号，优雅退出。
 func (ws *WorkerServer) startMonitorLoop() {
 	log.Println("监控启动：已启用配置热加载")
@@ -185,10 +182,11 @@ func DiffNewShortcodes(cachedPosts, latestPosts []PostItem) []string {
 func (ws *WorkerServer) checkAccount(username string, topN int) error {
 	log.Printf("监控：开始检测 @%s", username)
 
-	ctx, err := ws.getBrowser()
+	ctx, cancel, err := ws.getBrowser()
 	if err != nil {
 		return fmt.Errorf("获取浏览器失败: %w", err)
 	}
+	defer cancel()
 
 	if err := EnsureLoggedIn(ctx); err != nil {
 		return fmt.Errorf("登录验证失败: %w", err)

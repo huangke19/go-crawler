@@ -34,7 +34,7 @@ func (tb *TelegramClient) handleMonitor(message *tgbotapi.Message) {
 		return
 	}
 
-	text := fmt.Sprintf("📡 监控状态（每 %d 分钟检查一次）\n\n", config.MonitorIntervalMin)
+	text := fmt.Sprintf("📡 监控状态（每 %s 检查一次）\n\n", config.GetMonitorIntervalLabel())
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, username := range config.MonitorAccounts {
 		postsCache, ok := GetPostsFromCacheRaw(username)

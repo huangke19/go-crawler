@@ -215,21 +215,13 @@ func handleBot() {
 	fmt.Println("=== Instagram Telegram Bot ===")
 	fmt.Println()
 
-	// 初始化日志系统
-	if err := InitLogger(GetDefaultLogConfig()); err != nil {
-		fmt.Printf("❌ 初始化日志失败: %v\n", err)
-		os.Exit(1)
-	}
-
-	config, err := LoadConfigWithEnv("config.json")
+	config, err := LoadConfig("config.json")
 	if err != nil {
 		fmt.Printf("❌ 加载配置失败: %v\n", err)
 		fmt.Println("\n提示:")
 		fmt.Println("1. 复制 config.example.json 为 config.json")
 		fmt.Println("2. 在 config.json 中填入你的 Telegram Bot Token")
 		fmt.Println("3. 可选：配置 allowed_user_ids 限制访问权限")
-		fmt.Println("4. 或者通过环境变量设置：")
-		fmt.Println("   export TELEGRAM_BOT_TOKEN=\"your_token_here\"")
 		os.Exit(1)
 	}
 
@@ -255,14 +247,7 @@ func handleBot() {
 func handleWorker() {
 	fmt.Println("=== Instagram Worker 服务 ===")
 	fmt.Printf("监听地址: %s\n", getWorkerListenAddr())
-	fmt.Printf("Metrics 端点: http://%s/metrics\n", getWorkerListenAddr())
 	fmt.Println("✅ Worker 已启动，等待任务...")
-
-	// 初始化日志系统
-	if err := InitLogger(GetDefaultLogConfig()); err != nil {
-		fmt.Printf("❌ 初始化日志失败: %v\n", err)
-		os.Exit(1)
-	}
 
 	if err := RunWorker(); err != nil {
 		fmt.Printf("❌ Worker 运行失败: %v\n", err)

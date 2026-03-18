@@ -13,7 +13,6 @@
 //   - admin_user_ids：管理员用户 ID 列表（为空时回退为 allowed_user_ids）
 //   - favorite_accounts：常用账户列表（用于 Bot 快速选择）
 //   - worker_addr：Worker 服务监听地址（默认 127.0.0.1:18080）
-//   - worker_api_token：Worker 接口鉴权 Token（可选，建议配置）
 //
 // ============================================================================
 
@@ -34,9 +33,10 @@ type Config struct {
 	FavoriteAccounts       []string `json:"favorite_accounts"`
 	WorkerAddr             string   `json:"worker_addr"`
 	WorkerAPIToken         string   `json:"worker_api_token"`
-	MonitorAccounts        []string `json:"monitor_accounts"`      // 监控的账户列表
-	MonitorIntervalMin     int      `json:"monitor_interval_min"`  // 轮询间隔（分钟），默认 30
-	MonitorCompareTopN     int      `json:"monitor_compare_top_n"` // 监控对比前N条，默认20
+	MonitorAccounts        []string `json:"monitor_accounts"`       // 监控的账户列表
+	MonitorIntervalMin     int      `json:"monitor_interval_min"`   // 轮询间隔（分钟）
+	MonitorIntervalHours   int      `json:"monitor_interval_hours"` // 轮询间隔（小时）
+	MonitorCompareTopN     int      `json:"monitor_compare_top_n"`  // 监控对比前N条，默认20
 	MaxConcurrentDownloads int      `json:"max_concurrent_downloads"`
 	PostsCacheExpiryHours  int      `json:"posts_cache_expiry_hours"`
 }
@@ -53,17 +53,6 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("加载配置文件失败: %w", err)
 	}
 
-	// 应用默认值
-	applyDefaults(&config)
-
-	// 应用全局配置
-	applyGlobalConfig(&config)
-
-	return &config, nil
-}
-
-// applyDefaults 应用默认值
-func applyDefaults(config *Config) {
 	if strings.TrimSpace(config.WorkerAddr) == "" {
 		config.WorkerAddr = defaultWorkerListenAddr
 	}
@@ -73,17 +62,14 @@ func applyDefaults(config *Config) {
 		config.AdminUserIDs = append([]int64(nil), config.AllowedUserIDs...)
 	}
 
-	if config.MonitorIntervalMin <= 0 {
+	if config.MonitorIntervalMin <= 0 && config.MonitorIntervalHours <= 0 {
 		config.MonitorIntervalMin = defaultMonitorIntervalMin
 	}
 
 	if config.MonitorCompareTopN <= 0 {
 		config.MonitorCompareTopN = defaultMonitorCompareTopN
 	}
-}
 
-// applyGlobalConfig 应用到全局变量
-func applyGlobalConfig(config *Config) {
 	if config.MaxConcurrentDownloads > 0 {
 		maxConcurrentDownloads = config.MaxConcurrentDownloads
 	}
@@ -91,6 +77,8 @@ func applyGlobalConfig(config *Config) {
 	if config.PostsCacheExpiryHours > 0 {
 		postsCacheExpiry = time.Duration(config.PostsCacheExpiryHours) * time.Hour
 	}
+
+	return &config, nil
 }
 
 // SaveConfig 将配置原子写入到指定路径：
@@ -128,4 +116,34 @@ func (c *Config) GetWorkerBaseURL() string {
 		return addr
 	}
 	return "http://" + addr
+}
+
+// GetMonitorInterval 返回监控轮询间隔。
+// 优先级：
+// 1. monitor_interval_min
+// 2. monitor_interval_hours
+// 3. 默认值（30 分钟）
+func (c *Config) GetMonitorInterval() time.Duration {
+	if c != nil {
+		if c.MonitorIntervalMin > 0 {
+			return time.Duration(c.MonitorIntervalMin) * time.Minute
+		}
+		if c.MonitorIntervalHours > 0 {
+			return time.Duration(c.MonitorIntervalHours) * time.Hour
+		}
+	}
+	return time.Duration(defaultMonitorIntervalMin) * time.Minute
+}
+
+// GetMonitorIntervalLabel 返回用于展示的监控间隔文案。
+func (c *Config) GetMonitorIntervalLabel() string {
+	if c != nil {
+		if c.MonitorIntervalMin > 0 {
+			return fmt.Sprintf("%d 分钟", c.MonitorIntervalMin)
+		}
+		if c.MonitorIntervalHours > 0 {
+			return fmt.Sprintf("%d 小时", c.MonitorIntervalHours)
+		}
+	}
+	return fmt.Sprintf("%d 分钟", defaultMonitorIntervalMin)
 }

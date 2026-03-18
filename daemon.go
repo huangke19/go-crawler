@@ -35,6 +35,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,6 +63,19 @@ type ServiceRuntime struct {
 	Detail  string
 }
 
+func resolveExecutablePath() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+
+	resolved, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return executable, nil
+	}
+	return resolved, nil
+}
+
 // getWorkDir 获取守护进程工作目录（稳定路径，避免受当前执行目录影响）。
 // 优先级：
 // 1. 环境变量 GOBOT_WORKDIR
@@ -72,7 +86,7 @@ func getWorkDir() string {
 	if value := strings.TrimSpace(os.Getenv("GOBOT_WORKDIR")); value != "" {
 		return value
 	}
-	if executable, err := os.Executable(); err == nil {
+	if executable, err := resolveExecutablePath(); err == nil {
 		return filepath.Dir(executable)
 	}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -129,12 +143,15 @@ func StartServiceDaemon(service string) (string, error) {
 		return "", fmt.Errorf("%s 已在运行 (PID: %d)，请先停止", spec.label, pid)
 	}
 
-	executable, err := os.Executable()
+	executable, err := resolveExecutablePath()
 	if err != nil {
 		return "", fmt.Errorf("获取可执行文件路径失败: %w", err)
 	}
 
 	exePath := filepath.Join(filepath.Dir(executable), "crawler")
+	if _, err := os.Stat(exePath); err != nil {
+		return "", fmt.Errorf("未找到 crawler 可执行文件: %s，请先执行 ./build.sh", exePath)
+	}
 	workDir := getWorkDir()
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return "", fmt.Errorf("创建工作目录失败: %w", err)
@@ -252,22 +269,33 @@ func GetServiceRuntime(service string) (*ServiceRuntime, error) {
 	}
 
 	pid, err := ReadServicePID(service)
+	if err == nil {
+		runtime.PID = pid
+		if IsProcessRunning(pid) {
+			runtime.Running = true
+			runtime.Detail = fmt.Sprintf("正在运行 (PID: %d，gobot 管理)", pid)
+			return runtime, nil
+		}
+
+		// PID 文件已陈旧，先清理再尝试通过进程探测兜底识别。
+		RemoveServicePID(service)
+	}
+
+	// 兜底：即使不是 gobot 启动，也尽量识别真实运行状态。
+	detectedPID, detectErr := DetectServiceProcessPID(service)
+	if detectErr == nil && detectedPID > 0 {
+		runtime.Running = true
+		runtime.PID = detectedPID
+		runtime.Detail = fmt.Sprintf("正在运行 (PID: %d，外部启动)", detectedPID)
+		return runtime, nil
+	}
+
+	runtime.Running = false
 	if err != nil {
-		runtime.Running = false
 		runtime.Detail = "PID 文件不存在或不可读"
 		return runtime, nil
 	}
-
-	runtime.PID = pid
-	if !IsProcessRunning(pid) {
-		RemoveServicePID(service)
-		runtime.Running = false
-		runtime.Detail = fmt.Sprintf("PID 文件存在但进程不存在: %d", pid)
-		return runtime, nil
-	}
-
-	runtime.Running = true
-	runtime.Detail = fmt.Sprintf("正在运行 (PID: %d)", pid)
+	runtime.Detail = fmt.Sprintf("PID 文件存在但进程不存在: %d", pid)
 	return runtime, nil
 }
 
@@ -314,6 +342,77 @@ func IsProcessRunning(pid int) bool {
 		return false
 	}
 	return process.Signal(syscall.Signal(0)) == nil
+}
+
+func commandLooksLikeService(cmdline, service string) bool {
+	tokens := strings.Fields(cmdline)
+	if len(tokens) == 0 {
+		return false
+	}
+
+	hasServiceArg := false
+	for _, token := range tokens {
+		if token == service {
+			hasServiceArg = true
+			break
+		}
+	}
+	if !hasServiceArg {
+		return false
+	}
+
+	for _, token := range tokens {
+		base := filepath.Base(token)
+		if base == "crawler" || base == "go-crawler" {
+			return true
+		}
+	}
+	return false
+}
+
+// DetectServiceProcessPID 从系统进程中探测服务进程 PID。
+// 仅用于 status 兜底展示，不依赖 gobot 的 PID 文件。
+func DetectServiceProcessPID(service string) (int, error) {
+	cmd := exec.Command("ps", "ax", "-o", "pid=,command=")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("读取进程列表失败: %w", err)
+	}
+
+	var detectedPID int
+	lines := bytes.Split(out, []byte{'\n'})
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(string(rawLine))
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+
+		cmdline := strings.TrimSpace(strings.Join(fields[1:], " "))
+		if !commandLooksLikeService(cmdline, service) {
+			continue
+		}
+
+		if !IsProcessRunning(pid) {
+			continue
+		}
+
+		// 取较新的进程（PID 更大）作为当前活跃实例。
+		if pid > detectedPID {
+			detectedPID = pid
+		}
+	}
+
+	return detectedPID, nil
 }
 
 func ReadServicePID(service string) (int, error) {

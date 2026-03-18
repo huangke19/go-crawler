@@ -40,7 +40,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 )
 
 // 全局 HTTP 客户端，复用连接
@@ -161,13 +160,9 @@ func DownloadPostAndReturnPaths(username string, postIndex int, mediaInfo *Media
 // downloadPostInternal 内部下载函数，返回文件路径列表。
 // 注意：这里不做去重/断点续传；如果需要"重复调用秒回"，应由上层文件缓存（`files_cache.json`）负责。
 func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) ([]string, error) {
-	startTime := time.Now()
-	LogDownloadStart(username, postIndex, 0)
-
 	// 创建用户目录
 	userDir, err := CreateUserDirectory(username)
 	if err != nil {
-		LogDownloadError(username, postIndex, err)
 		return nil, err
 	}
 
@@ -208,7 +203,6 @@ func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) 
 
 	// 并发下载（提升并发数到 10）
 	if err := downloadConcurrently(tasks, maxConcurrentDownloads, 1); err != nil {
-		LogDownloadError(username, postIndex, err)
 		return nil, err
 	}
 
@@ -217,11 +211,6 @@ func downloadPostInternal(username string, postIndex int, mediaInfo *MediaInfo) 
 	for _, task := range tasks {
 		filePaths = append(filePaths, task.savePath)
 	}
-
-	// 记录成功
-	duration := time.Since(startTime)
-	LogDownloadSuccess(username, postIndex, len(filePaths), duration)
-	RecordDownloadSuccess(username, duration.Seconds(), len(filePaths))
 
 	return filePaths, nil
 }
@@ -286,7 +275,6 @@ func downloadConcurrently(tasks []downloadTask, maxConcurrent int, retries int) 
 	errChan := make(chan error, totalFiles)
 
 	fmt.Printf("开始下载 %d 个文件...\n", totalFiles)
-	UpdateConcurrentDownloads(float64(maxConcurrent))
 
 	for _, task := range tasks {
 		wg.Add(1)
@@ -298,14 +286,12 @@ func downloadConcurrently(tasks []downloadTask, maxConcurrent int, retries int) 
 
 			if err := DownloadMedia(t.url, t.savePath, retries); err != nil {
 				errChan <- fmt.Errorf("%s: %v", filepath.Base(t.savePath), err)
-				RecordDownloadError()
 			}
 		}(task)
 	}
 
 	wg.Wait()
 	close(errChan)
-	UpdateConcurrentDownloads(0)
 
 	if len(errChan) == 0 {
 		fmt.Printf("✓ 下载完成，共 %d 个文件\n", totalFiles)

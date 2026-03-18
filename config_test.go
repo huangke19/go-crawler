@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // setupConfigTest 为配置测试创建临时目录
@@ -108,6 +109,43 @@ func TestLoadConfig_MinimalConfig(t *testing.T) {
 	// 验证默认值
 	if len(config.AllowedUserIDs) != 0 {
 		t.Errorf("AllowedUserIDs 应为空")
+	}
+}
+
+func TestLoadConfig_HourlyMonitorInterval(t *testing.T) {
+	setupConfigTest(t)
+
+	configJSON := `{
+		"telegram_bot_token": "test_token_123",
+		"monitor_interval_hours": 2
+	}`
+
+	if err := os.WriteFile("hourly.json", []byte(configJSON), 0644); err != nil {
+		t.Fatalf("创建配置文件失败: %v", err)
+	}
+
+	config, err := LoadConfig("hourly.json")
+	if err != nil {
+		t.Fatalf("加载配置失败: %v", err)
+	}
+
+	if config.MonitorIntervalHours != 2 {
+		t.Errorf("MonitorIntervalHours 不匹配: %d", config.MonitorIntervalHours)
+	}
+
+	if got := config.GetMonitorInterval(); got != 2*time.Hour {
+		t.Errorf("GetMonitorInterval() = %v, want %v", got, 2*time.Hour)
+	}
+}
+
+func TestGetMonitorInterval_PrefersMinutes(t *testing.T) {
+	config := &Config{
+		MonitorIntervalMin:   45,
+		MonitorIntervalHours: 2,
+	}
+
+	if got := config.GetMonitorInterval(); got != 45*time.Minute {
+		t.Errorf("GetMonitorInterval() = %v, want %v", got, 45*time.Minute)
 	}
 }
 

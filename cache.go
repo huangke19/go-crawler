@@ -100,16 +100,6 @@ type FilesCache struct {
 	DownloadedAt time.Time `json:"downloaded_at"`
 }
 
-func cloneFilesCache(src *FilesCache) *FilesCache {
-	if src == nil {
-		return nil
-	}
-
-	dst := *src
-	dst.Files = append([]string(nil), src.Files...)
-	return &dst
-}
-
 var (
 	mediaCacheMu     sync.RWMutex
 	postsCacheMu     sync.RWMutex
@@ -150,7 +140,6 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 	if mediaCacheLoaded {
 		result := mediaCacheMap
 		mediaCacheMu.RUnlock()
-		UpdateCacheSize("media", float64(len(result)))
 		return result, nil
 	}
 	mediaCacheMu.RUnlock()
@@ -160,7 +149,6 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 
 	// 双重检查：可能其他 goroutine 已经加载了
 	if mediaCacheLoaded {
-		UpdateCacheSize("media", float64(len(mediaCacheMap)))
 		return mediaCacheMap, nil
 	}
 
@@ -169,14 +157,12 @@ func LoadMediaCache() (map[string]*MediaCache, error) {
 		if os.IsNotExist(err) {
 			mediaCacheMap = make(map[string]*MediaCache)
 			mediaCacheLoaded = true
-			UpdateCacheSize("media", 0)
 			return mediaCacheMap, nil
 		}
 		return nil, err
 	}
 
 	mediaCacheLoaded = true
-	UpdateCacheSize("media", float64(len(mediaCacheMap)))
 	return mediaCacheMap, nil
 }
 
@@ -199,7 +185,6 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 	postsCacheMu.RLock()
 	if postsCacheLoaded {
 		postsCacheMu.RUnlock()
-		UpdateCacheSize("posts", float64(len(postsCacheMap)))
 		return postsCacheMap, nil
 	}
 	postsCacheMu.RUnlock()
@@ -208,7 +193,6 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 	defer postsCacheMu.Unlock()
 
 	if postsCacheLoaded {
-		UpdateCacheSize("posts", float64(len(postsCacheMap)))
 		return postsCacheMap, nil
 	}
 
@@ -217,14 +201,12 @@ func LoadPostsCache() (map[string]*PostsCache, error) {
 		if os.IsNotExist(err) {
 			postsCacheMap = make(map[string]*PostsCache)
 			postsCacheLoaded = true
-			UpdateCacheSize("posts", 0)
 			return postsCacheMap, nil
 		}
 		return nil, err
 	}
 
 	postsCacheLoaded = true
-	UpdateCacheSize("posts", float64(len(postsCacheMap)))
 	return postsCacheMap, nil
 }
 
@@ -246,7 +228,6 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 	filesCacheMu.RLock()
 	if filesCacheLoaded {
 		filesCacheMu.RUnlock()
-		UpdateCacheSize("files", float64(len(filesCacheMap)))
 		return filesCacheMap, nil
 	}
 	filesCacheMu.RUnlock()
@@ -255,7 +236,6 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 	defer filesCacheMu.Unlock()
 
 	if filesCacheLoaded {
-		UpdateCacheSize("files", float64(len(filesCacheMap)))
 		return filesCacheMap, nil
 	}
 
@@ -264,14 +244,12 @@ func LoadFilesCache() (map[string]*FilesCache, error) {
 		if os.IsNotExist(err) {
 			filesCacheMap = make(map[string]*FilesCache)
 			filesCacheLoaded = true
-			UpdateCacheSize("files", 0)
 			return filesCacheMap, nil
 		}
 		return nil, err
 	}
 
 	filesCacheLoaded = true
-	UpdateCacheSize("files", float64(len(filesCacheMap)))
 	return filesCacheMap, nil
 }
 
@@ -289,79 +267,36 @@ func SaveFilesCache(cache map[string]*FilesCache) error {
 
 // GetMediaFromCache 从媒体缓存获取媒体信息。
 func GetMediaFromCache(shortcode string) (*MediaCache, bool) {
-	cache, err := LoadMediaCache()
-	if err != nil {
-		LogCacheMiss("media", shortcode)
-		RecordCacheMiss("media")
-		return nil, false
-	}
-
-	mediaCacheMu.RLock()
+	cache, _ := LoadMediaCache()
 	media, ok := cache[shortcode]
-	mediaCacheMu.RUnlock()
-	if ok {
-		LogCacheHit("media", shortcode)
-		RecordCacheHit("media")
-	} else {
-		LogCacheMiss("media", shortcode)
-		RecordCacheMiss("media")
-	}
 	return media, ok
 }
 
 // SaveMediaToCache 保存媒体信息到媒体缓存。
 func SaveMediaToCache(shortcode string, media *MediaCache) error {
-	cache, err := LoadMediaCache()
-	if err != nil {
-		return err
-	}
-
-	mediaCacheMu.Lock()
-	defer mediaCacheMu.Unlock()
+	cache, _ := LoadMediaCache()
 	cache[shortcode] = media
-	mediaCacheMap = cache
-	mediaCacheLoaded = true
-
-	path := filepath.Join(cacheDir, "media_cache.json")
-	return saveJSONFile(path, cache, 0644)
+	return SaveMediaCache(cache)
 }
 
 // GetPostsFromCache 从帖子列表缓存获取用户帖子列表（会检查过期时间）。
 func GetPostsFromCache(username string) (*PostsCache, bool) {
-	cache, err := LoadPostsCache()
-	if err != nil {
-		LogCacheMiss("posts", username)
-		RecordCacheMiss("posts")
-		return nil, false
-	}
-
-	postsCacheMu.RLock()
+	cache, _ := LoadPostsCache()
 	posts, ok := cache[username]
-	postsCacheMu.RUnlock()
 	if !ok {
-		LogCacheMiss("posts", username)
-		RecordCacheMiss("posts")
 		return nil, false
 	}
 	// 检查是否过期
 	if time.Now().After(posts.ExpiresAt) {
-		LogCacheMiss("posts", username)
-		RecordCacheMiss("posts")
 		return nil, false
 	}
-	LogCacheHit("posts", username)
-	RecordCacheHit("posts")
 	return posts, true
 }
 
 // GetPostsCacheSnapshot 返回指定用户的帖子缓存副本以及有效性。
 // 用于需要同时获取“不过期基线”和“是否过期”的场景，避免多次无锁读取导致竞态。
 func GetPostsCacheSnapshot(username string) (cached []PostItem, valid bool, ok bool) {
-	cache, err := LoadPostsCache()
-	if err != nil {
-		return nil, false, false
-	}
-
+	cache, _ := LoadPostsCache()
 	postsCacheMu.RLock()
 	defer postsCacheMu.RUnlock()
 
@@ -381,14 +316,8 @@ func GetPostsCacheSnapshot(username string) (cached []PostItem, valid bool, ok b
 // GetPostsFromCacheRaw 从帖子缓存获取用户帖子列表（不检查过期时间）。
 // 该方法用于“更新检测”场景：即使缓存过期，也需要拿到旧基线来判断是否真有新帖。
 func GetPostsFromCacheRaw(username string) (*PostsCache, bool) {
-	cache, err := LoadPostsCache()
-	if err != nil {
-		return nil, false
-	}
-
-	postsCacheMu.RLock()
+	cache, _ := LoadPostsCache()
 	posts, ok := cache[username]
-	postsCacheMu.RUnlock()
 	if !ok {
 		return nil, false
 	}
@@ -397,79 +326,40 @@ func GetPostsFromCacheRaw(username string) (*PostsCache, bool) {
 
 // SavePostsToCache 保存用户帖子列表到缓存。
 func SavePostsToCache(username string, posts *PostsCache) error {
-	cache, err := LoadPostsCache()
-	if err != nil {
-		return err
-	}
-
-	postsCacheMu.Lock()
-	defer postsCacheMu.Unlock()
+	cache, _ := LoadPostsCache()
 	cache[username] = posts
-	postsCacheMap = cache
-	postsCacheLoaded = true
-
-	path := filepath.Join(cacheDir, "posts_cache.json")
-	return saveJSONFile(path, cache, 0644)
+	return SavePostsCache(cache)
 }
 
 // GetFilesFromCache 从文件缓存获取文件列表。
 // 除了缓存命中外，这里会验证每个文件路径是否仍存在：
 // - 若任意文件缺失，则视为缓存失效，促使 worker 走"重新下载"路径。
 func GetFilesFromCache(shortcode string) (*FilesCache, bool) {
-	cache, err := LoadFilesCache()
-	if err != nil {
-		LogCacheMiss("files", shortcode)
-		RecordCacheMiss("files")
-		return nil, false
-	}
-
-	filesCacheMu.RLock()
+	cache, _ := LoadFilesCache()
 	files, ok := cache[shortcode]
-	filesCacheMu.RUnlock()
 	if !ok {
-		LogCacheMiss("files", shortcode)
-		RecordCacheMiss("files")
 		return nil, false
 	}
 	// 检查文件是否都存在
 	for _, file := range files.Files {
 		if _, err := os.Stat(file); os.IsNotExist(err) {
-			LogCacheMiss("files", shortcode)
-			RecordCacheMiss("files")
 			return nil, false
 		}
 	}
-	LogCacheHit("files", shortcode)
-	RecordCacheHit("files")
-	return cloneFilesCache(files), true
+	return files, true
 }
 
 // SaveFilesToCache 保存文件列表到缓存，并同步更新"下载历史"的内存缓存。
 // 该函数是事件驱动更新：当写入新下载记录时，尽量避免下一次 bot 侧读取历史还要重新排序全量数据。
 func SaveFilesToCache(shortcode string, files *FilesCache) error {
-	cache, err := LoadFilesCache()
-	if err != nil {
-		return err
-	}
-
-	filesCacheMu.Lock()
-	stored := cloneFilesCache(files)
-	cache[shortcode] = stored
-	filesCacheMap = cache
-	filesCacheLoaded = true
-
-	path := filepath.Join(cacheDir, "files_cache.json")
-	if err := saveJSONFile(path, cache, 0644); err != nil {
-		filesCacheMu.Unlock()
-		return err
-	}
-	filesCacheMu.Unlock()
+	cache, _ := LoadFilesCache()
+	cache[shortcode] = files
 
 	// 主动更新历史缓存（事件驱动）
 	historyCacheMu.Lock()
 	if historyCache != nil {
 		// 插入新记录到头部（已按时间倒序）
-		historyCache = append([]*FilesCache{stored}, historyCache...)
+		historyCache = append([]*FilesCache{files}, historyCache...)
 		historyCacheTime = time.Now()
 	} else {
 		// 首次加载，下次 GetDownloadHistory 会重新加载并排序
@@ -477,7 +367,7 @@ func SaveFilesToCache(shortcode string, files *FilesCache) error {
 	}
 	historyCacheMu.Unlock()
 
-	return nil
+	return SaveFilesCache(cache)
 }
 
 // GetDownloadHistory 获取下载历史（按下载时间倒序）。
@@ -499,17 +389,12 @@ func GetDownloadHistory(limit int) []*FilesCache {
 	historyCacheMu.RUnlock()
 
 	// 加载并排序
-	cache, err := LoadFilesCache()
-	if err != nil {
-		return nil
-	}
+	cache, _ := LoadFilesCache()
 
 	var history []*FilesCache
-	filesCacheMu.RLock()
 	for _, files := range cache {
 		history = append(history, files)
 	}
-	filesCacheMu.RUnlock()
 
 	// 使用快速排序（按下载时间倒序）
 	if len(history) > 1 {

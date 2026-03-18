@@ -220,10 +220,11 @@ func (ws *WorkerServer) downloadByShortcode(shortcode string) ([]string, error) 
 		// 3. 调用 GraphQL API 获取媒体URL
 		log.Printf("  缓存未命中，调用 GraphQL API...")
 		postURL := instagramBaseURL + "/p/" + shortcode + "/"
-		ctx, err := ws.getBrowser()
+		ctx, cancel, err := ws.getBrowser()
 		if err != nil {
 			return nil, fmt.Errorf("获取浏览器失败: %w", err)
 		}
+		defer cancel()
 
 		mediaInfo, err = ExtractMediaURLs(ctx, postURL)
 		if err != nil {
@@ -291,10 +292,11 @@ func (ws *WorkerServer) downloadByIndex(username string, postIndex int) ([]strin
 	if shortcode == "" && needRefresh {
 		// 2. 缓存过期、不存在或数量不足，访问主页
 		log.Printf("  访问用户主页加载更多帖子...")
-		ctx, err := ws.getBrowser()
+		ctx, cancel, err := ws.getBrowser()
 		if err != nil {
 			return nil, fmt.Errorf("获取浏览器失败: %w", err)
 		}
+		defer cancel()
 
 		if err := EnsureLoggedIn(ctx); err != nil {
 			return nil, fmt.Errorf("登录验证失败: %w", err)
@@ -425,10 +427,11 @@ func (ws *WorkerServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request
 func (ws *WorkerServer) checkCacheUpdate(username string) (*CheckUpdateResponse, error) {
 	log.Printf("  检查 @%s 的缓存状态...", username)
 
-	ctx, err := ws.getBrowser()
+	ctx, cancel, err := ws.getBrowser()
 	if err != nil {
 		return nil, fmt.Errorf("获取浏览器失败: %w", err)
 	}
+	defer cancel()
 
 	if err := EnsureLoggedIn(ctx); err != nil {
 		return nil, fmt.Errorf("登录验证失败: %w", err)
@@ -539,13 +542,14 @@ func (ws *WorkerServer) handleMonitorCheck(w http.ResponseWriter, r *http.Reques
 		topN = defaultMonitorCompareTopN
 	}
 
-	ctx, ctxErr := ws.getBrowser()
+	ctx, cancel, ctxErr := ws.getBrowser()
 	if ctxErr != nil {
 		writeJSON(w, http.StatusInternalServerError, MonitorCheckResponse{
 			Success: false, Message: ctxErr.Error(),
 		})
 		return
 	}
+	defer cancel()
 	if loginErr := EnsureLoggedIn(ctx); loginErr != nil {
 		writeJSON(w, http.StatusInternalServerError, MonitorCheckResponse{
 			Success: false, Message: loginErr.Error(),

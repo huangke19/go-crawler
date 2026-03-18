@@ -81,8 +81,15 @@ func (c *Config) Validate() error {
 	}
 
 	// 验证数值范围
-	if err := validateIntRange("monitor_interval_min", c.MonitorIntervalMin, 1, 1440); err != nil {
-		errors = append(errors, err)
+	if c.MonitorIntervalMin > 0 {
+		if err := validateIntRange("monitor_interval_min", c.MonitorIntervalMin, 1, 1440); err != nil {
+			errors = append(errors, err)
+		}
+	}
+	if c.MonitorIntervalHours > 0 {
+		if err := validateIntRange("monitor_interval_hours", c.MonitorIntervalHours, 1, 168); err != nil {
+			errors = append(errors, err)
+		}
 	}
 	if err := validateIntRange("monitor_compare_top_n", c.MonitorCompareTopN, 1, 100); err != nil {
 		errors = append(errors, err)

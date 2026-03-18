@@ -306,6 +306,19 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "仅按小时监控也有效",
+			config: &Config{
+				TelegramBotToken:     "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
+				AllowedUserIDs:       []int64{123456789},
+				AdminUserIDs:         []int64{123456789},
+				WorkerAddr:           "127.0.0.1:18080",
+				MonitorAccounts:      []string{"nasa"},
+				MonitorIntervalHours: 1,
+				MonitorCompareTopN:   10,
+			},
+			wantErr: false,
+		},
+		{
 			name: "无效 Token",
 			config: &Config{
 				TelegramBotToken: "",

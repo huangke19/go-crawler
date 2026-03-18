@@ -55,6 +55,7 @@ cp config.example.json config.json
   "worker_api_token": "",
   "monitor_accounts": ["example_account"],
   "monitor_interval_min": 30,
+  "monitor_interval_hours": 0,
   "monitor_compare_top_n": 10,
   "max_concurrent_downloads": 10,
   "posts_cache_expiry_hours": 24
@@ -65,6 +66,8 @@ cp config.example.json config.json
 
 - `worker_addr`: Worker 监听地址（默认 `127.0.0.1:18080`）
 - `worker_api_token`: Worker API 鉴权 token（建议配置；Bot 与 Worker 需一致）
+- `monitor_interval_min`: 监控轮询间隔（分钟，优先级高于 `monitor_interval_hours`）
+- `monitor_interval_hours`: 监控轮询间隔（小时，当未配置分钟时生效）
 
 环境变量（会覆盖配置文件）：
 
@@ -74,6 +77,7 @@ cp config.example.json config.json
 - `ALLOWED_USER_IDS`
 - `ADMIN_USER_IDS`
 - `MONITOR_INTERVAL_MIN`
+- `MONITOR_INTERVAL_HOURS`
 - `MAX_CONCURRENT_DOWNLOADS`
 - `POSTS_CACHE_EXPIRY_HOURS`
 

@@ -47,9 +47,6 @@ type WorkerServer struct {
 	server           *http.Server
 	config           *Config
 	workerAPIToken   string
-	browserCtx       context.Context
-	browserCancel    context.CancelFunc
-	browserMu        sync.Mutex
 	activeReqs       sync.WaitGroup // 跟踪活跃请求
 	stopCh           chan struct{}  // 关闭信号，通知监控 goroutine 退出
 	notifyMu         sync.Mutex
@@ -162,43 +159,18 @@ func (ws *WorkerServer) Shutdown(ctx context.Context) error {
 		log.Println("⚠️  等待请求超时，强制关闭")
 	}
 
-	// 关闭浏览器实例
-	ws.browserMu.Lock()
-	if ws.browserCancel != nil {
-		ws.browserCancel()
-		log.Println("关闭浏览器实例")
-	}
-	ws.browserMu.Unlock()
-
 	return ws.server.Shutdown(ctx)
 }
 
-// getBrowser 获取或创建浏览器实例（Worker 级别复用）。
+// getBrowser 创建一个一次性浏览器实例。
 //
 // 该浏览器实例用于：
 // - 访问用户主页获取帖子 shortcode 列表（按序号下载/刷新缓存）
 // - 在媒体缓存未命中时，调用 GraphQL 获取媒体 URL
-func (ws *WorkerServer) getBrowser() (context.Context, error) {
-	ws.browserMu.Lock()
-	defer ws.browserMu.Unlock()
-
-	// 如果浏览器存在且健康，直接返回
-	if ws.browserCtx != nil && ws.browserCtx.Err() == nil {
-		return ws.browserCtx, nil
-	}
-
-	// 如果旧的上下文存在但出错，先清理
-	if ws.browserCancel != nil {
-		ws.browserCancel()
-		log.Println("清理旧的浏览器实例")
-	}
-
+func (ws *WorkerServer) getBrowser() (context.Context, context.CancelFunc, error) {
 	ctx, cancel := CreateFastBrowserContext()
-	ws.browserCtx = ctx
-	ws.browserCancel = cancel
-	log.Println("创建新的浏览器实例")
-
-	return ws.browserCtx, nil
+	log.Println("创建一次性浏览器实例")
+	return ctx, cancel, nil
 }
 
 // notifyCookieExpired 发送 Cookie 失效通知到 Telegram。
