@@ -21,8 +21,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -198,7 +201,15 @@ func DownloadExternalURL(rawURL string) (*ExternalDownloadResponse, error) {
 
 	if err != nil {
 		log.Printf("yt-dlp 输出:\n%s", string(output))
-		return nil, fmt.Errorf("yt-dlp 执行失败: %w\n输出: %s", err, truncateOutput(string(output), 500))
+
+		// X 平台：yt-dlp 无法下载纯图片推文，回退到 API 抓取图片
+		outputStr := string(output)
+		if platform == PlatformX && strings.Contains(outputStr, "No video could be found") {
+			log.Printf("X 推文无视频，尝试通过 API 下载图片...")
+			return downloadXTweetImages(rawURL, id, downloadDir)
+		}
+
+		return nil, fmt.Errorf("yt-dlp 执行失败: %w\n输出: %s", err, truncateOutput(outputStr, 500))
 	}
 
 	// 收集下载的文件
@@ -305,6 +316,149 @@ func truncateOutput(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// ── X/Twitter 图片推文下载（yt-dlp 回退） ──────────────────────────
+
+// fxTweetResponse 是 fxtwitter.com API 的响应结构
+type fxTweetResponse struct {
+	Tweet struct {
+		Text   string `json:"text"`
+		Author struct {
+			Name string `json:"name"`
+		} `json:"author"`
+		Media struct {
+			Photos []struct {
+				URL string `json:"url"`
+			} `json:"photos"`
+			Videos []struct {
+				URL string `json:"url"`
+			} `json:"videos"`
+		} `json:"media"`
+	} `json:"tweet"`
+}
+
+// downloadXTweetImages 通过 fxtwitter API 获取推文图片并下载
+func downloadXTweetImages(rawURL, tweetID, downloadDir string) (*ExternalDownloadResponse, error) {
+	// 从 URL 中提取用户名
+	username := extractXUsername(rawURL)
+	if username == "" {
+		username = "tweet"
+	}
+
+	// 调用 fxtwitter API
+	apiURL := fmt.Sprintf("https://api.fxtwitter.com/%s/status/%s", username, tweetID)
+	log.Printf("请求 fxtwitter API: %s", apiURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("User-Agent", "go-crawler/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求 fxtwitter API 失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fxtwitter API 返回 %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	var fxResp fxTweetResponse
+	if err := json.Unmarshal(body, &fxResp); err != nil {
+		return nil, fmt.Errorf("解析 fxtwitter 响应失败: %w", err)
+	}
+
+	// 收集所有媒体 URL
+	var mediaURLs []string
+	for _, photo := range fxResp.Tweet.Media.Photos {
+		if photo.URL != "" {
+			mediaURLs = append(mediaURLs, photo.URL)
+		}
+	}
+	for _, video := range fxResp.Tweet.Media.Videos {
+		if video.URL != "" {
+			mediaURLs = append(mediaURLs, video.URL)
+		}
+	}
+
+	if len(mediaURLs) == 0 {
+		return nil, fmt.Errorf("推文中未找到任何媒体内容")
+	}
+
+	log.Printf("从推文中提取到 %d 个媒体文件", len(mediaURLs))
+
+	// 下载所有媒体文件
+	var filePaths []string
+	for i, mediaURL := range mediaURLs {
+		ext := guessExtFromURL(mediaURL)
+		var filename string
+		if len(mediaURLs) == 1 {
+			filename = fmt.Sprintf("%s%s", tweetID, ext)
+		} else {
+			filename = fmt.Sprintf("%s_%d%s", tweetID, i+1, ext)
+		}
+		savePath := filepath.Join(downloadDir, filename)
+
+		log.Printf("下载 [%d/%d]: %s", i+1, len(mediaURLs), mediaURL)
+		if err := DownloadMedia(mediaURL, savePath, 2); err != nil {
+			log.Printf("下载失败 %s: %v", mediaURL, err)
+			continue
+		}
+		filePaths = append(filePaths, savePath)
+	}
+
+	if len(filePaths) == 0 {
+		return nil, fmt.Errorf("所有媒体文件下载失败")
+	}
+
+	title := fxResp.Tweet.Text
+	if len(title) > 100 {
+		title = title[:100] + "..."
+	}
+
+	return &ExternalDownloadResponse{
+		Success:   true,
+		Message:   fmt.Sprintf("下载完成，共 %d 个文件", len(filePaths)),
+		FilePaths: filePaths,
+		Platform:  string(PlatformX),
+		Title:     title,
+	}, nil
+}
+
+// extractXUsername 从 X/Twitter URL 中提取用户名
+func extractXUsername(url string) string {
+	p := regexp.MustCompile(`(?:twitter\.com|x\.com)/(\w+)/status/`)
+	if m := p.FindStringSubmatch(url); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+// guessExtFromURL 从 URL 猜测文件扩展名
+func guessExtFromURL(url string) string {
+	// 去掉查询参数
+	clean := url
+	if idx := strings.Index(clean, "?"); idx != -1 {
+		clean = clean[:idx]
+	}
+	ext := strings.ToLower(filepath.Ext(clean))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm":
+		return ext
+	default:
+		return ".jpg"
+	}
 }
 
 // GetYtDlpVersion 获取 yt-dlp 版本（用于 /status 展示）
