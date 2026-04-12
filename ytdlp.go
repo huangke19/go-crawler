@@ -243,14 +243,12 @@ func buildYtDlpArgs(platform PlatformType, url, downloadDir string) []string {
 		}
 	case PlatformX:
 		return []string{
-			"-f", "best",
 			"-o", outputTemplate,
 			"--no-overwrites",
 			url,
 		}
 	default:
 		return []string{
-			"-f", "best",
 			"-o", outputTemplate,
 			"--no-overwrites",
 			url,
