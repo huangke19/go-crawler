@@ -23,6 +23,7 @@ var botCommands = []botCommand{
 	{"status", "查看状态与 worker 控制（管理员含控制按钮）"},
 	{"favorites", "管理常用账户列表，仅管理员"},
 	{"monitor", "查看监控账户状态，仅管理员"},
+	{"ytdl", "下载 YouTube / X (Twitter) 视频"},
 }
 
 func handleSetupBot() {

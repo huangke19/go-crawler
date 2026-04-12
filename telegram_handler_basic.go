@@ -42,6 +42,8 @@ func (tb *TelegramClient) handleCommand(message *tgbotapi.Message) {
 		tb.handleStatus(message)
 	case "monitor":
 		tb.handleMonitor(message)
+	case "ytdl":
+		tb.handleYtdl(message, args)
 	default:
 		tb.sendMessage(message.Chat.ID, fmt.Sprintf("❌ 未知命令: /%s\n使用 /help 查看帮助", command))
 	}
@@ -57,6 +59,7 @@ func (tb *TelegramClient) handleStart(message *tgbotapi.Message) {
 func (tb *TelegramClient) handleHelp(message *tgbotapi.Message) {
 	text := "📖 可用命令:\n\n"
 	text += "/download - 下载指定帖子（按钮交互）\n"
+	text += "/ytdl - 下载 YouTube / X 视频\n"
 	text += "/status - 查看状态"
 	if tb.isAdminUser(message.From.ID) {
 		text += "与 worker 控制\n"
@@ -70,7 +73,10 @@ func (tb *TelegramClient) handleHelp(message *tgbotapi.Message) {
 	text += "1️⃣ 发送 /download\n"
 	text += "2️⃣ 点击账户按钮（或点击\"输入其他用户\"）\n"
 	text += "3️⃣ 点击帖子序号 1-10（或点击\"输入其他序号\"）\n"
-	text += "4️⃣ 等待下载完成"
+	text += "4️⃣ 等待下载完成\n\n"
+	text += "🎬 YouTube / X 下载:\n"
+	text += "  直接发送链接即可自动识别并下载\n"
+	text += "  或使用 /ytdl <url>"
 	tb.sendMessage(message.Chat.ID, text)
 }
 

@@ -116,6 +116,15 @@ var (
 		[]string{"command"},
 	)
 
+	// ExternalDownloadTotal 外部平台下载总数
+	ExternalDownloadTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "crawler_external_download_total",
+			Help: "Total number of external platform downloads (YouTube/X)",
+		},
+		[]string{"platform", "status"}, // youtube/x, success/error
+	)
+
 	// MonitorCheckTotal 监控检查总数
 	MonitorCheckTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{

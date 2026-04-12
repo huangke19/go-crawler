@@ -88,6 +88,7 @@ func NewWorkerServer() *WorkerServer {
 
 	mux.HandleFunc("/health", ws.handleHealth)
 	mux.HandleFunc("/download", ws.handleDownload)
+	mux.HandleFunc("/download-url", ws.handleDownloadURL)
 	mux.HandleFunc("/check-update", ws.handleCheckUpdate)
 	mux.HandleFunc("/monitor-check", ws.handleMonitorCheck)
 	mux.Handle("/metrics", promhttp.Handler())
@@ -120,6 +121,7 @@ func (ws *WorkerServer) Start() error {
 	UpdateWorkerHealth(true)
 	LogWorkerHealth(true, "Worker 服务已启动")
 	ws.startMonitorLoop()
+	ws.startDailyCheckScheduler()
 	if err := ws.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		UpdateWorkerHealth(false)
 		LogWorkerHealth(false, fmt.Sprintf("Worker 服务异常: %v", err))

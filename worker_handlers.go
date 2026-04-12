@@ -610,6 +610,54 @@ func (ws *WorkerServer) handleMonitorCheck(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// handleDownloadURL 处理外部 URL 下载请求（YouTube / X）
+func (ws *WorkerServer) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, ExternalDownloadResponse{Message: "仅支持 POST"})
+		return
+	}
+	if !ws.authorizeRequest(w, r) {
+		return
+	}
+
+	ws.activeReqs.Add(1)
+	defer ws.activeReqs.Done()
+
+	var req ExternalDownloadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ExternalDownloadResponse{Message: "无效的请求体"})
+		return
+	}
+
+	if req.URL == "" {
+		writeJSON(w, http.StatusBadRequest, ExternalDownloadResponse{Message: "缺少 url 参数"})
+		return
+	}
+
+	platform := DetectPlatform(req.URL)
+	if platform == PlatformUnknown {
+		writeJSON(w, http.StatusBadRequest, ExternalDownloadResponse{
+			Message: "不支持的 URL，目前仅支持 YouTube 和 X (Twitter)",
+		})
+		return
+	}
+
+	log.Printf("收到外部下载请求: %s (%s)", req.URL, PlatformLabel(platform))
+
+	result, err := DownloadExternalURL(req.URL)
+	if err != nil {
+		log.Printf("外部下载失败: %v", err)
+		ExternalDownloadTotal.WithLabelValues(string(platform), "error").Inc()
+		writeJSON(w, http.StatusInternalServerError, ExternalDownloadResponse{
+			Message: fmt.Sprintf("下载失败: %v", err),
+		})
+		return
+	}
+
+	ExternalDownloadTotal.WithLabelValues(string(platform), "success").Inc()
+	writeJSON(w, http.StatusOK, result)
+}
+
 // writeJSON 写入 JSON 响应。这里忽略编码错误以避免影响主流程（一般不会发生）。
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

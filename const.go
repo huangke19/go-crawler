@@ -57,6 +57,12 @@ const (
 	defaultMonitorIntervalMin = 30
 )
 
+// yt-dlp 外部下载
+const (
+	ytdlpTimeout         = 5 * time.Minute  // yt-dlp 单次下载超时
+	telegramFileSizeLimit = 50 * 1024 * 1024 // Telegram 文件大小限制 50MB
+)
+
 // 运行时可配置参数（由 config.json 覆盖）
 var (
 	postsCacheExpiry       = defaultPostsCacheExpiry

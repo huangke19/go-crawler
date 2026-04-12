@@ -35,6 +35,7 @@ func (tb *TelegramClient) handleStatus(message *tgbotapi.Message) {
 		}
 	}
 
+	text += fmt.Sprintf("yt-dlp: %s\n", GetYtDlpVersion())
 	text += fmt.Sprintf("当前时间: %s", time.Now().Format("2006-01-02 15:04:05"))
 
 	// 管理员额外显示 worker 控制按钮

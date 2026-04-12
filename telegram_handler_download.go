@@ -336,6 +336,10 @@ func (tb *TelegramClient) handleMessage(message *tgbotapi.Message) {
 	tb.statesMutex.RUnlock()
 
 	if !exists {
+		// 没有活跃的对话状态 -> 尝试识别外部平台 URL（YouTube / X）
+		if tb.handleExternalURL(message) {
+			return
+		}
 		return
 	}
 

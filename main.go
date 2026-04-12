@@ -66,6 +66,8 @@ func main() {
 		handleWorker()
 	case "setup-bot":
 		handleSetupBot()
+	case "ytdl":
+		handleYtdlCLI()
 	case "version", "-v", "--version":
 		fmt.Printf("Instagram Crawler v%s\n", version)
 	case "help", "-h", "--help":
@@ -91,6 +93,7 @@ func printUsage() {
 	fmt.Println("  crawler bot                             启动 Telegram Bot 服务")
 	fmt.Println("  crawler worker                          启动 Worker 服务（供 Bot 调用）")
 	fmt.Println("  crawler setup-bot                       显示 Telegram Bot 命令设置指南")
+	fmt.Println("  crawler ytdl <url>                      下载 YouTube / X 视频（yt-dlp）")
 	fmt.Println("  crawler version                         显示版本信息")
 	fmt.Println("  crawler help                            显示帮助信息")
 	fmt.Println()
@@ -103,6 +106,8 @@ func printUsage() {
 	fmt.Println("  crawler bot                             # 启动 Telegram Bot")
 	fmt.Println("  crawler worker                          # 启动 Worker 服务")
 	fmt.Println("  crawler setup-bot                       # 设置 Bot 命令菜单")
+	fmt.Println("  crawler ytdl https://youtube.com/watch?v=xxx  # 下载 YouTube 视频")
+	fmt.Println("  crawler ytdl https://x.com/user/status/123    # 下载 X 推文媒体")
 	fmt.Println()
 	fmt.Println("选项:")
 	fmt.Println("  -h, --help                              显示帮助信息")
@@ -345,4 +350,56 @@ func handleCheckUpdate() {
 	}
 
 	fmt.Printf("\n✓ 全部完成！共下载 %d 条新帖\n", len(newShortcodes))
+}
+
+// handleYtdlCLI 本地 CLI 模式下载外部平台媒体（YouTube / X）。
+// 不依赖 Worker，直接调用 yt-dlp。
+func handleYtdlCLI() {
+	if len(os.Args) < 3 {
+		fmt.Println("用法: crawler ytdl <url>")
+		fmt.Println()
+		fmt.Println("支持的平台:")
+		fmt.Println("  🎬 YouTube (视频/Shorts)")
+		fmt.Println("  🐦 X / Twitter (视频/图片)")
+		fmt.Println()
+		fmt.Println("示例:")
+		fmt.Println("  crawler ytdl https://youtube.com/watch?v=dQw4w9WgXcQ")
+		fmt.Println("  crawler ytdl https://x.com/user/status/123456789")
+		os.Exit(1)
+	}
+
+	rawURL := strings.TrimSpace(os.Args[2])
+	if rawURL == "" {
+		fmt.Println("❌ 错误: URL 不能为空")
+		os.Exit(1)
+	}
+
+	platform := DetectPlatform(rawURL)
+	if platform == PlatformUnknown {
+		fmt.Println("❌ 不支持的 URL，目前仅支持 YouTube 和 X (Twitter)")
+		os.Exit(1)
+	}
+
+	startTime := time.Now()
+	fmt.Printf("=== %s %s 下载 ===\n", PlatformEmoji(platform), PlatformLabel(platform))
+	fmt.Printf("🔗 %s\n\n", rawURL)
+	fmt.Println("正在下载...")
+
+	result, err := DownloadExternalURL(rawURL)
+	if err != nil {
+		fmt.Printf("❌ 下载失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	elapsed := time.Since(startTime)
+
+	if result.Title != "" {
+		fmt.Printf("📝 标题: %s\n", result.Title)
+	}
+	fmt.Printf("✓ 下载完成！共 %d 个文件 (耗时: %.2f 秒)\n\n", len(result.FilePaths), elapsed.Seconds())
+
+	for i, f := range result.FilePaths {
+		fmt.Printf("  [%d] %s\n", i+1, f)
+	}
+	fmt.Println()
 }
