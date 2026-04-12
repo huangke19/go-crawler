@@ -247,7 +247,7 @@ func buildYtDlpArgs(platform PlatformType, url, downloadDir string) []string {
 
 	switch platform {
 	case PlatformYouTube:
-		return []string{
+		args := []string{
 			"-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
 			"--merge-output-format", "mp4",
 			"-o", outputTemplate,
@@ -255,8 +255,13 @@ func buildYtDlpArgs(platform PlatformType, url, downloadDir string) []string {
 			"--no-overwrites",
 			"--write-thumbnail",
 			"--convert-thumbnails", "jpg",
-			url,
 		}
+		// 尝试使用浏览器 cookies 绕过 YouTube 的 bot 检测
+		if browser := detectCookieBrowser(); browser != "" {
+			args = append(args, "--cookies-from-browser", browser)
+		}
+		args = append(args, url)
+		return args
 	case PlatformX:
 		return []string{
 			"-o", outputTemplate,
@@ -321,6 +326,30 @@ func truncateOutput(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// detectCookieBrowser 检测可用的浏览器 cookies 来源
+// 优先级：chrome > firefox > safari
+func detectCookieBrowser() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	browsers := []struct {
+		name string
+		path string
+	}{
+		{"chrome", filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Default", "Cookies")},
+		{"firefox", filepath.Join(home, "Library", "Application Support", "Firefox", "Profiles")},
+	}
+
+	for _, b := range browsers {
+		if _, err := os.Stat(b.path); err == nil {
+			return b.name
+		}
+	}
+	return ""
 }
 
 // ── X/Twitter 图片推文下载（yt-dlp 回退） ──────────────────────────
