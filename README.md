@@ -1,24 +1,28 @@
 # Instagram 爬虫工具 (go-crawler)
 
-一个基于 Go 的 Instagram 下载工具，支持本地 CLI 下载，以及 Telegram Bot 远程控制（Bot + Worker 双进程）。
+一个基于 Go 的多平台媒体下载工具，支持 Instagram、YouTube、X (Twitter)，提供本地 CLI 下载和 Telegram Bot 远程控制（Bot + Worker 双进程）。
 
 ## 特性
 
-- 支持图片、视频、轮播下载
-- 会话持久化（`crawler login` 后复用 Cookie）
+- **Instagram**：支持图片、视频、轮播下载，会话持久化
+- **YouTube**：视频/Shorts 下载，自动使用浏览器 cookies 绕过验证（依赖 yt-dlp）
+- **X (Twitter)**：视频推文通过 yt-dlp 下载，纯图片推文自动回退到 fxtwitter API 抓取
 - Bot/Worker 分离，下载任务不阻塞 Bot 交互
 - 三级缓存（媒体/帖子/文件）提升重复任务速度
+- Telegram Bot 自动链接识别（直接发送 YouTube/X 链接即可下载）
 - `gobot` 守护管理（start/stop/restart/status/logs）
 - Worker 接口安全增强：
   - 配置 `WORKER_API_TOKEN` 时，必须携带 `X-Worker-Token`
   - 未配置 token 时，仅允许本机来源访问
+- Prometheus metrics 监控（Instagram + 外部平台下载指标）
 - macOS 防休眠：优先使用 `caffeinate`，不可用时自动降级直接启动
 
 ## 环境要求
 
 - Go 1.24+
-- Chrome/Chromium
+- Chrome/Chromium（Instagram 抓取 + YouTube cookies）
 - Instagram 账号（用于登录态）
+- yt-dlp（YouTube/X 下载，`brew install yt-dlp`）
 
 ## 快速开始
 
@@ -86,14 +90,15 @@ cp config.example.json config.json
 ### crawler
 
 ```bash
-./crawler login
-./crawler download <username> <index>
-./crawler dl <username> <index>
-./crawler check-update <username>
-./crawler cu <username>
-./crawler bot
-./crawler worker
-./crawler setup-bot
+./crawler login                              # 登录 Instagram
+./crawler download <username> <index>        # 下载指定帖子
+./crawler dl <username> <index>              # download 简写
+./crawler check-update <username>            # 检查用户新帖
+./crawler cu <username>                      # check-update 简写
+./crawler ytdl <url>                         # 下载 YouTube / X 视频
+./crawler bot                                # 启动 Telegram Bot
+./crawler worker                             # 启动 Worker 服务
+./crawler setup-bot                          # 设置 Bot 命令菜单
 ```
 
 ### gobot
@@ -116,19 +121,20 @@ cp config.example.json config.json
 
 ## Telegram 命令
 
-- `/download` 或 `/dl`
-- `/status`
-- `/control`（管理员）
-- `/favorites`
-- `/monitor`
+- `/download` — 下载 Instagram 帖子（按钮交互）
+- `/ytdl <url>` — 下载 YouTube / X 视频
+- `/status` — 查看状态与 yt-dlp 版本
+- `/favorites` — 管理常用账户（管理员）
+- `/monitor` — 查看监控账户状态（管理员）
+- 直接发送 YouTube / X 链接会自动识别并下载
 
 ## Bot + Worker 架构
 
 ```text
 Telegram User
   -> Bot (控制面)
-  -> HTTP POST /download (/check-update, /monitor-check)
-  -> Worker (执行面，浏览器抓取 + 下载)
+  -> HTTP POST /download (/check-update, /monitor-check, /download-url)
+  -> Worker (执行面，浏览器抓取 + yt-dlp + 下载)
   -> Bot 上传结果文件
 ```
 
@@ -153,9 +159,12 @@ go-crawler/
 ├── telegram_handler_status.go
 ├── telegram_handler_favorites.go
 ├── telegram_handler_monitor.go
+├── telegram_handler_external.go
 ├── telegram_worker.go
 ├── worker_server.go
 ├── worker_handlers.go
+├── ytdlp.go
+├── scheduler.go
 ├── cache.go
 ├── config.go
 ├── config_validation.go
