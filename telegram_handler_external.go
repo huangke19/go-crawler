@@ -100,8 +100,13 @@ func (tb *TelegramClient) executeExternalDownload(chatID int64, rawURL string) {
 	elapsed := time.Since(startTime)
 
 	if err != nil {
+		errMsg := err.Error()
+		// 只显示第一行（关键原因），去掉冗长的 yt-dlp 原始输出
+		if idx := strings.Index(errMsg, "\n输出:"); idx != -1 {
+			errMsg = errMsg[:idx]
+		}
 		tb.editMessage(chatID, statusMsg.MessageID,
-			fmt.Sprintf("❌ 下载失败: %v", err))
+			fmt.Sprintf("❌ %s", errMsg))
 		return
 	}
 

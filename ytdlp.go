@@ -209,7 +209,8 @@ func DownloadExternalURL(rawURL string) (*ExternalDownloadResponse, error) {
 			return downloadXTweetImages(rawURL, id, downloadDir)
 		}
 
-		return nil, fmt.Errorf("yt-dlp 执行失败: %w\n输出: %s", err, truncateOutput(outputStr, 500))
+		reason := extractYtDlpError(outputStr)
+		return nil, fmt.Errorf("下载失败: %s\n输出: %s", reason, truncateOutput(outputStr, 500))
 	}
 
 	// 收集下载的文件
@@ -318,6 +319,24 @@ func extractTitleFromOutput(output string) string {
 		}
 	}
 	return ""
+}
+
+// extractYtDlpError 从 yt-dlp 输出中提取关键错误原因
+func extractYtDlpError(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ERROR:") {
+			// 去掉 "ERROR: [youtube] xxx:" 前缀，保留核心信息
+			msg := strings.TrimPrefix(line, "ERROR:")
+			msg = strings.TrimSpace(msg)
+			// 去掉 [platform] id: 前缀
+			if idx := strings.Index(msg, "]:"); idx != -1 {
+				msg = strings.TrimSpace(msg[idx+2:])
+			}
+			return msg
+		}
+	}
+	return "未知错误"
 }
 
 // truncateOutput 截断过长的输出
