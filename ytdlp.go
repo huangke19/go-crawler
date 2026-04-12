@@ -219,6 +219,11 @@ func DownloadExternalURL(rawURL string) (*ExternalDownloadResponse, error) {
 	}
 
 	if len(files) == 0 {
+		// X 平台：yt-dlp 成功执行但无文件产出，回退到 API 抓取
+		if platform == PlatformX {
+			log.Printf("yt-dlp 无文件产出，尝试通过 API 下载推文媒体...")
+			return downloadXTweetImages(rawURL, id, downloadDir)
+		}
 		return nil, fmt.Errorf("yt-dlp 未下载到任何文件")
 	}
 
