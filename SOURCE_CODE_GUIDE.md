@@ -6,7 +6,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `main.go` | CLI 入口（login/download/bot/worker/check-update） |
+| `main.go` | CLI 入口（login/download/bot/worker/check-update/setup-bot/ytdl） |
 | `auth.go` | 登录态保存/加载、Cookie 注入、登录校验 |
 | `scraper_navigator.go` | 主页导航、帖子定位、滚动加载 |
 | `scraper_extractor.go` | GraphQL 媒体提取（支持 context 取消） |
@@ -52,6 +52,7 @@
 
 - `GET /health`
 - `POST /download`
+- `POST /download-url`
 - `POST /check-update`
 - `POST /monitor-check`
 - `GET /metrics`
@@ -70,6 +71,13 @@
 3. Bot 调用 Worker
 4. Worker 执行抓取下载
 5. Bot 上传文件
+
+### 外部链接下载流程
+
+1. 用户发送 `/ytdl <url>` 或直接发送链接
+2. Bot 调用 Worker `/download-url`
+3. Worker 使用 `yt-dlp` 或回退逻辑下载
+4. Bot 上传文件
 
 ### 缓存命中顺序
 

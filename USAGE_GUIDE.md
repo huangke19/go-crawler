@@ -27,11 +27,10 @@
 在 Telegram 中：
 
 - `/download`
-- `/dl <username> <index>`
-- `/status`
-- `/control`（管理员）
+- `/status`（管理员会看到 worker 控制按钮）
+- `/ytdl <url>`
 
-## 3. 三种交互方式
+## 3. Instagram 下载交互方式
 
 ### 方式 A：完整命令
 
@@ -51,7 +50,18 @@
 1. 发送 `/download`
 2. 回复 `账户名 序号`（如 `nike 3`）
 
-## 4. Worker 安全策略（重要）
+## 4. 外部平台下载
+
+```bash
+./crawler ytdl <url>
+```
+
+Telegram 中也支持：
+
+- `/ytdl <url>`
+- 直接发送 YouTube / X 链接
+
+## 5. Worker 安全策略（重要）
 
 - 配置了 `WORKER_API_TOKEN`：
   - Bot 请求会自动带 `X-Worker-Token`
@@ -64,7 +74,7 @@
 - 单机个人使用：可不配 token
 - 跨机器/暴露端口：必须配 token
 
-## 5. 常用运维
+## 6. 常用运维
 
 ```bash
 ./gobot status
@@ -75,9 +85,16 @@
 
 ./gobot restart
 ./gobot worker restart
+./gobot launchd install
+./gobot launchd status
 ```
 
-## 6. 常见问题
+说明：
+
+- `gobot launchd ...` 用于 macOS 开机常驻 bot
+- `worker` 建议按需启动，或在 Telegram 的 `/status` 消息里用按钮控制
+
+## 7. 常见问题
 
 ### 下载卡住或失败
 
@@ -93,3 +110,8 @@
 ### 地址不一致
 
 - 检查 `worker_addr` 或 `WORKER_ADDR` 是否与 Worker 监听一致
+
+### 找不到 `/control`
+
+- 当前没有独立 `/control` 命令
+- 管理员使用 `/status` 后的 inline 按钮控制 worker

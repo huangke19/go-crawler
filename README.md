@@ -122,10 +122,10 @@ cp config.example.json config.json
 ## Telegram 命令
 
 - `/download` — 下载 Instagram 帖子（按钮交互）
-- `/ytdl <url>` — 下载 YouTube / X 视频
-- `/status` — 查看状态与 yt-dlp 版本
+- `/status` — 查看 Bot/Worker 状态；管理员会看到 Worker 控制按钮
 - `/favorites` — 管理常用账户（管理员）
 - `/monitor` — 查看监控账户状态（管理员）
+- `/ytdl <url>` — 下载 YouTube / X 视频
 - 直接发送 YouTube / X 链接会自动识别并下载
 
 ## Bot + Worker 架构
@@ -182,6 +182,21 @@ go-crawler/
 - 若系统有 `caffeinate`，自动使用 `caffeinate -i`
 - 若没有，自动降级直接启动服务（会给出提示）
 
+## launchd 常驻（macOS）
+
+`gobot` 还支持通过 `launchd` 管理 bot 开机常驻：
+
+```bash
+./gobot launchd install
+./gobot launchd status
+./gobot launchd uninstall
+```
+
+说明：
+
+- `launchd` 当前用于托管 `bot`
+- `worker` 仍建议按需通过 Telegram `/status` 中的控制按钮或 `gobot worker ...` 管理
+
 ## 故障排查
 
 ### Worker 连接失败
@@ -196,6 +211,13 @@ go-crawler/
 1. `./gobot status`
 2. `./gobot logs`
 3. 确认 `allowed_user_ids`/`admin_user_ids` 配置正确
+
+### 管理员找不到 `/control`
+
+当前代码没有独立 `/control` 命令。
+
+1. 发送 `/status`
+2. 管理员会看到 Worker 的启动/停止/重启/状态按钮
 
 ## 相关文档
 

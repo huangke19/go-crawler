@@ -59,3 +59,9 @@ export POSTS_CACHE_EXPIRY_HOURS="24"
 - `config_env.go`
 - `config_validation.go`
 - `config.example.json`
+
+## 运行与控制补充
+
+- `worker_addr` / `WORKER_API_TOKEN` 主要用于 Bot 调 Worker
+- 管理员在 Telegram 中通过 `/status` 消息里的按钮控制 worker
+- `gobot worker ...` 适合本机运维；`gobot launchd ...` 适合让 bot 开机常驻

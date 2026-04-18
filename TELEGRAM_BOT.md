@@ -51,11 +51,12 @@ Worker 默认安全策略：
 
 ## Telegram 命令
 
-- `/download` 或 `/dl`: 下载交互
-- `/status`: 查看 bot/worker 状态
-- `/control`: 管理员控制 worker（启动/停止/重启/状态）
+- `/download`: 下载交互
+- `/status`: 查看 bot/worker 状态；管理员会看到 worker 控制按钮
 - `/favorites`: 管理常用账号
 - `/monitor`: 监控相关操作
+- `/ytdl <url>`: 下载 YouTube / X 视频
+- 直接发送 YouTube / X 链接：自动识别并下载
 
 ## 常用运维命令
 
@@ -76,6 +77,12 @@ Worker 默认安全策略：
 
 - 检查 `./gobot worker status`
 - 如果未启动：`./gobot worker start`
+
+### 1.1) 管理员如何远程控制 worker
+
+- 发送 `/status`
+- 点击消息里的 `启动`、`停止`、`重启`、`状态` 按钮
+- 当前没有单独的 `/control` 命令
 
 ### 2) Worker 接口返回未授权
 

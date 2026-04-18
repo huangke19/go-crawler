@@ -26,8 +26,18 @@
 
 ## 建议
 
-- 日常仅常驻 `bot`，`worker` 用 `/control` 或 `gobot worker ...` 管理
+- 日常仅常驻 `bot`，`worker` 用 Telegram `/status` 中的控制按钮或 `gobot worker ...` 管理
 - 需要长期无人值守时，优先确保系统有 `caffeinate`
+
+## launchd 方案
+
+如果希望 bot 随系统启动，可使用：
+
+```bash
+./gobot launchd install
+./gobot launchd status
+./gobot launchd uninstall
+```
 
 ## 检查命令
 
